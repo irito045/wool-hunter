@@ -24,10 +24,11 @@ from tkinter import messagebox, ttk
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from gui import envfile, health, napcat, process, weibo_login   # noqa: E402
+from gui import envfile, health, napcat, process, tray, weibo_login   # noqa: E402
 from gui.napcat_dialog import NapCatQRDialog            # noqa: E402
 from gui.overview import OverviewTab                    # noqa: E402
 from gui.subs_dialog import AddSubDialog                # noqa: E402
+from gui.weibo_qr_dialog import WeiboQRDialog           # noqa: E402
 
 FONT = ("Microsoft YaHei UI", 10)
 FONT_B = ("Microsoft YaHei UI", 10, "bold")
@@ -139,7 +140,20 @@ class Console(tk.Tk):
         self.after(400, self.overview.reload)
         self.overview.start_auto_refresh(nb)
 
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # 托盘：点 X 缩到托盘、bot 继续跑，不是退出。挂不上（非 Windows 或失败）
+        # 就退回「X 即关闭」的老行为，程序照样能正常关。
+        self._tray = tray.Tray(
+            tooltip="羊毛猎人 · 控制台",
+            on_show=self._show_from_tray,
+            on_toggle_bot=self._toggle_bot_from_tray,
+            on_exit=self._exit_app,
+            is_bot_running=lambda: process.port_pid() > 0,
+            schedule=lambda fn: self.after(0, fn),
+        )
+        self._tray_ok = self._tray.start()
+        self._told_tray = False
+
+        self.protocol("WM_DELETE_WINDOW", self._on_x)
         for line in self.tailer.prime(60):
             self._log_line(line, raw=True)
         self._tick_status()
@@ -428,8 +442,13 @@ class Console(tk.Tk):
             box = ttk.LabelFrame(inner, text=f" {title} ", padding=10)
             box.pack(fill="x", pady=(0, 12))
             box.columnconfigure(1, weight=1)
+            # AI 分区顶部放一个服务商下拉：选了它自动填好下面的接口地址和模型名。
+            base_r = 0
+            if any(f.key == "AI_BASE_URL" for f in fields):
+                self._build_provider_row(box)      # 占掉 grid 第 0、1 行
+                base_r = 1
             for r, fld in enumerate(fields):
-                self._config_row(box, r, fld)
+                self._config_row(box, base_r + r, fld)
 
         bar = ttk.Frame(inner)
         bar.pack(fill="x")
@@ -461,6 +480,53 @@ class Console(tk.Tk):
         self._cfg_canvas.yview_moveto(max(0.0, (y - 60) / total))
         ent.focus_set()
         ent.selection_range(0, "end")
+
+    def _build_provider_row(self, box: ttk.Widget) -> None:
+        """AI 分区顶部的「服务商」下拉框。选一家 → 自动填 AI_BASE_URL / AI_MODEL。
+
+        这个下拉本身**不是** .env 字段（不进 _vars，不会被保存），它只是驱动那两个
+        真字段的便捷入口。用别家 OpenAI 兼容服务时选「自定义」，自己填地址和模型。
+        """
+        ttk.Label(box, text="服务商", font=FONT_B).grid(
+            row=0, column=0, sticky="w", pady=(6, 0))
+        cell = ttk.Frame(box)
+        cell.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=(6, 0))
+        self._provider_var = tk.StringVar(
+            value=envfile.provider_for(self._env.get("AI_BASE_URL", "")))
+        cb = ttk.Combobox(cell, textvariable=self._provider_var, state="readonly",
+                          values=envfile.provider_names(), font=FONT, width=18)
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>", lambda e: self._on_provider())
+        ttk.Button(cell, text="去申请 Key", width=12,
+                   command=self._open_apply).pack(side="left", padx=(6, 0))
+        tk.Label(box, text="选好服务商，下面的接口地址和模型名会自动填。"
+                          "用别家兼容服务就选「自定义」，自己填这两项。",
+                 font=FONT_S, fg=C_MUTED, anchor="w", justify="left"
+                 ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(1, 4))
+
+    def _on_provider(self) -> None:
+        name = self._provider_var.get()
+        p = envfile.provider_by_name(name)
+        if not p or name == envfile.CUSTOM_PROVIDER:
+            return                       # 自定义：别覆盖用户自己填的地址/模型
+        _n, base, model, _apply = p
+        for key, val in (("AI_BASE_URL", base), ("AI_MODEL", model)):
+            self._showing_placeholder.discard(key)
+            if key in self._vars:
+                self._vars[key].set(val)
+            if key in self._entries:
+                self._entries[key].configure(foreground="")
+
+    def _open_apply(self) -> None:
+        p = envfile.provider_by_name(self._provider_var.get())
+        url = p[3] if p else ""
+        if not url:
+            messagebox.showinfo(
+                "自定义服务商",
+                "「自定义」没有固定的申请地址，请到你所用服务的官网获取 API Key。")
+            return
+        import webbrowser
+        webbrowser.open(url)
 
     def _config_row(self, box: ttk.Widget, r: int, fld: envfile.Field) -> None:
         label = fld.label + ("  *" if fld.required else "")
@@ -529,34 +595,52 @@ class Console(tk.Tk):
 
     def _test_deepseek(self) -> None:
         values = self._collect_config()
-        self._async("正在测试 DeepSeek…",
-                    lambda: health.check_deepseek(values.get("DEEPSEEK_API_KEY", "")),
-                    lambda c: messagebox.showinfo("DeepSeek", f"{ICON[c.level]} {c.detail}"))
+        self._async("正在测试 AI 模型…",
+                    lambda: health.check_deepseek(values.get("DEEPSEEK_API_KEY", ""),
+                                                  values.get("AI_BASE_URL", ""),
+                                                  values.get("AI_MODEL", "")),
+                    lambda c: messagebox.showinfo("AI 模型", f"{ICON[c.level]} {c.detail}"))
+
+    def _weibo_uid(self) -> str:
+        return next((u for u in envfile.normalize_ids(
+            self._vars["WEIBO_UIDS"].get()).split(",") if u), weibo_login.PROBE_UID)
 
     def _weibo_login(self) -> None:
-        if not messagebox.askyesno(
-                "扫码登录微博",
-                "会弹出一个浏览器窗口，用微博 App 扫码或输入账号登录。\n"
-                "登录成功后 Cookie 会自动写回 .env（不会显示在界面上）。\n\n现在打开吗？"):
+        """首选原生扫码（零安装）；失败再提示走浏览器（playwright）或手动。"""
+        WeiboQRDialog(self, self._weibo_uid(), on_done=self._weibo_qr_done)
+
+    def _weibo_qr_done(self, ok: bool, val: str) -> None:
+        if ok:
+            self._save_weibo_cookie(val)
             return
-        uid = next((u for u in envfile.normalize_ids(
-            self._vars["WEIBO_UIDS"].get()).split(",") if u), weibo_login.PROBE_UID)
+        # 原生扫码没成：给出回退。val 是失败原因。
+        if messagebox.askyesno(
+                "原生扫码没成功",
+                f"{val}\n\n改用浏览器扫码吗？（需要 playwright，第一次要装一次）\n"
+                f"选「否」可以按 README「微博监控」里的手动办法复制 Cookie。"):
+            self._weibo_login_browser()
+
+    def _weibo_login_browser(self) -> None:
+        uid = self._weibo_uid()
 
         def done(res: tuple[bool, str]) -> None:
             ok, val = res
             if not ok:
                 messagebox.showerror("登录失败", val)
                 return
-            envfile.write_env({"WEIBO_COOKIE": val})
-            self._env = envfile.read_env()
-            self._vars["WEIBO_COOKIE"].set(envfile.mask(val))
-            self._dirty_secrets.discard("WEIBO_COOKIE")
-            # 绝不把 Cookie 打进日志
-            self._log_line(f"微博 Cookie 已更新（{len(val)} 字符），重启后生效", raw=True)
-            messagebox.showinfo("好了", "Cookie 已保存。点「重启」让它生效。")
-            self.run_health()
+            self._save_weibo_cookie(val)
 
         self._async("等你在浏览器里登录…", lambda: weibo_login.login(uid), done)
+
+    def _save_weibo_cookie(self, val: str) -> None:
+        envfile.write_env({"WEIBO_COOKIE": val})
+        self._env = envfile.read_env()
+        self._vars["WEIBO_COOKIE"].set(envfile.mask(val))
+        self._dirty_secrets.discard("WEIBO_COOKIE")
+        # 绝不把 Cookie 打进日志
+        self._log_line(f"微博 Cookie 已更新（{len(val)} 字符），重启后生效", raw=True)
+        messagebox.showinfo("好了", "Cookie 已保存。点「重启」让它生效。")
+        self.run_health()
 
     # ══════════════ 订阅 ══════════════
     def _build_subs_tab(self, nb: ttk.Notebook) -> None:
@@ -799,9 +883,11 @@ class Console(tk.Tk):
         self.after(int((napcat._RECONNECT_GRACE_S + 3) * 1000), self.run_health)
 
     def _start(self) -> None:
+        # start() 返回非空 = 没启动：可能是「已经有一个在跑」，也可能是「启动失败」。
+        # 用中性标题「启动 bot」，别写死「无需启动」——启动失败时那个标题是错的。
         why = self.runner.start()
         if why:
-            messagebox.showinfo("无需启动", why)
+            messagebox.showinfo("启动 bot", why)
             return
         self.run_health()
         self._recheck_after_reconnect()
@@ -922,13 +1008,61 @@ class Console(tk.Tk):
 
         threading.Thread(target=runner, daemon=True).start()
 
-    def _on_close(self) -> None:
-        """关窗口时，把这个项目在后台留下的东西一起收干净。
+    # ── 托盘：X 缩托盘，真退出走 _exit_app ──
+    def _on_x(self) -> None:
+        """点右上角 X：有托盘就缩进去，bot 继续跑；没托盘就照旧退出。"""
+        if self._tray_ok:
+            self._hide_to_tray()
+        else:
+            self._exit_app()
+
+    def _hide_to_tray(self) -> None:
+        self.withdraw()
+        if not self._told_tray:
+            self._told_tray = True
+            self._tray.notify("羊毛猎人还在后台运行",
+                              "控制台已缩到托盘，bot 照常推送。双击托盘图标打开它。")
+
+    def _show_from_tray(self) -> None:
+        self.deiconify()
+        self.lift()
+        try:
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def _toggle_bot_from_tray(self) -> None:
+        """托盘菜单里的「启动/停止 bot」。"""
+        if process.port_pid() > 0:
+            # 端口上这个 bot 不是本控制台起的（用户自己 py bot.py 起的）时，别默默杀——
+            # 从托盘一键停很容易误触。是我们自己起的就直接停（菜单文案已经很明确）。
+            if not self.runner.owns_bot:
+                self._show_from_tray()
+                if not messagebox.askyesno(
+                        "停止 bot",
+                        "端口上这个 bot 不是本控制台启动的（可能是你自己在命令行起的）。\n"
+                        "仍要停掉它吗？"):
+                    return
+            self.runner.stop()
+            self._log_line("已停止（从托盘）", raw=True)
+        else:
+            why = self.runner.start()
+            if why:
+                self._show_from_tray()
+                messagebox.showinfo("启动 bot", why)
+        self.run_health()
+
+    def _exit_app(self) -> None:
+        """真正退出控制台：把这个项目在后台留下的东西一起收干净。
+
+        可能是从托盘「退出」进来的（窗口正被 withdraw 藏着），所以先 deiconify，
+        否则下面那个确认框会开在看不见的地方。
 
         列表是**当场探测**出来的，并且逐条报给用户看——「一并关闭」是个不可逆动作，
         不能让它悄悄多杀或少杀一个进程。NapCat 只杀它自己安装目录底下的那些，
         用户电脑上那个真的 QQ 客户端进程名一样，绝不能碰（见 napcat._under）。
         """
+        self.deiconify()
         running = self._running_pieces()
         if running:
             names = "\n".join(f"  • {n}" for n in running)
@@ -939,6 +1073,8 @@ class Console(tk.Tk):
                 self._stop_everything()
         # 看门狗必须先断，否则 destroy() 之后它还会把 bot 拉起来
         self.runner._want_running = False
+        if self._tray_ok:
+            self._tray.stop()
         self.destroy()
 
     def _running_pieces(self) -> list[str]:

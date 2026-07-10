@@ -53,12 +53,58 @@ BASIC: list[Field] = [
           example="10001"),
 ]
 
+# 服务商预设：底层只用 OpenAI 兼容的 /chat/completions，所以这几家都能直接用。
+# (显示名, base_url, 默认模型, 申请地址)。「自定义」让用户自己填地址和模型。
+# base_url 的写法各家不一（DeepSeek 无 /v1，其余带 /v1），拼接规则见
+# deepseek_checker.ai_endpoint()。
+AI_PROVIDERS: list[tuple[str, str, str, str]] = [
+    ("DeepSeek", "https://api.deepseek.com", "deepseek-chat",
+     "https://platform.deepseek.com/"),
+    ("Kimi 月之暗面", "https://api.moonshot.cn/v1", "moonshot-v1-8k",
+     "https://platform.moonshot.cn/"),
+    ("智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash",
+     "https://open.bigmodel.cn/"),
+    ("通义千问 Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-turbo",
+     "https://dashscope.console.aliyun.com/"),
+    ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini",
+     "https://platform.openai.com/"),
+    ("自定义", "", "", ""),
+]
+CUSTOM_PROVIDER = "自定义"
+
+
+def provider_names() -> list[str]:
+    return [p[0] for p in AI_PROVIDERS]
+
+
+def provider_by_name(name: str) -> tuple[str, str, str, str] | None:
+    return next((p for p in AI_PROVIDERS if p[0] == name), None)
+
+
+def provider_for(base_url: str) -> str:
+    """根据 base_url 反推是哪家（下拉框回显用）。认不出就是「自定义」。"""
+    b = (base_url or "").strip().rstrip("/")
+    if not b:
+        return AI_PROVIDERS[0][0]          # 空 = 默认 DeepSeek
+    for name, url, _model, _apply in AI_PROVIDERS:
+        if url and b == url.rstrip("/"):
+            return name
+    return CUSTOM_PROVIDER
+
+
 AI: list[Field] = [
-    Field("DEEPSEEK_API_KEY", "DeepSeek API Key", "secret", False,
+    Field("DEEPSEEK_API_KEY", "API Key", "secret", False,
           "用来判断「这是具体商品的优惠，还是签到打卡拉人头」。它不判断价格划不划算。\n"
           "留空也能跑：AI 环节一律放行，只剩正则过滤，噪音会多一些。\n"
-          "去 platform.deepseek.com 申请，一个月大概几毛钱。",
+          "先在上面选服务商，再把对应平台申请到的 key 填这里。",
           example="sk-..."),
+    Field("AI_BASE_URL", "接口地址", "text", False,
+          "选了服务商会自动填好，一般不用改。用自建网关或别的兼容服务时手动填。",
+          default="https://api.deepseek.com"),
+    Field("AI_MODEL", "模型名", "text", False,
+          "选了服务商会自动填好。想换更强/更便宜的模型时改这里"
+          "（如 deepseek-chat、moonshot-v1-8k、glm-4-flash、qwen-turbo、gpt-4o-mini）。",
+          default="deepseek-chat"),
 ]
 
 WEIBO: list[Field] = [
@@ -243,6 +289,16 @@ def validate(values: dict[str, str]) -> list[str]:
     interval = (values.get("WEIBO_CHECK_INTERVAL") or "").strip()
     if interval.isdigit() and int(interval) < 60:
         errs.append("微博检查间隔别低于 60 秒，容易被风控")
+
+    base = (values.get("AI_BASE_URL") or "").strip()
+    if base and not re.match(r"^https?://", base):
+        errs.append("「接口地址」要以 http:// 或 https:// 开头")
+    # 填了 key 却把地址或模型清空了：AI 一定调不通，且报错藏在运行日志里不好查
+    if (values.get("DEEPSEEK_API_KEY") or "").strip():
+        if not base:
+            errs.append("填了 API Key，就得有「接口地址」（选个服务商会自动填）")
+        if not (values.get("AI_MODEL") or "").strip():
+            errs.append("填了 API Key，就得有「模型名」（选个服务商会自动填）")
     return errs
 
 

@@ -70,29 +70,38 @@ def check_napcat(env: dict[str, str], state: str = "", bot_uptime: float = 0.0) 
     return Check("NapCat", level, text, fix=fix)
 
 
-def check_deepseek(api_key: str) -> Check:
+def check_deepseek(api_key: str, base_url: str = "", model: str = "") -> Check:
+    """真去打一次 /chat/completions，验 key + 地址 + 模型三者能不能通。
+
+    不再写死 DeepSeek：地址和模型来自 .env（AI_BASE_URL / AI_MODEL），所以
+    Kimi、智谱、通义、OpenAI 等任何 OpenAI 兼容服务都能在这里被验证。
+    """
     key = (api_key or "").strip().strip('"')
     if not key:
-        return Check("DeepSeek", WARN,
+        return Check("AI 模型", WARN,
                      "没填。AI 环节会一律放行，只剩正则过滤，噪音会多一些。")
+    from services.deepseek_checker import ai_endpoint   # ROOT/src 已在 sys.path 上
+    model = (model or "").strip() or "deepseek-chat"
     try:
         import httpx
         r = httpx.post(
-            "https://api.deepseek.com/chat/completions",
+            ai_endpoint(base_url),
             headers={"Authorization": f"Bearer {key}"},
-            json={"model": "deepseek-chat", "max_tokens": 1,
+            json={"model": model, "max_tokens": 1,
                   "messages": [{"role": "user", "content": "hi"}]},
             timeout=15,
         )
     except Exception as e:
-        return Check("DeepSeek", BAD, f"连不上：{type(e).__name__}")
+        return Check("AI 模型", BAD, f"连不上：{type(e).__name__}")
     if r.status_code == 200:
-        return Check("DeepSeek", OK, "key 可用")
+        return Check("AI 模型", OK, f"可用（{model}）")
     if r.status_code == 401:
-        return Check("DeepSeek", BAD, "key 不对（401）")
+        return Check("AI 模型", BAD, "key 不对（401）")
     if r.status_code == 402:
-        return Check("DeepSeek", BAD, "余额不足（402），去 platform.deepseek.com 充值")
-    return Check("DeepSeek", BAD, f"HTTP {r.status_code}")
+        return Check("AI 模型", BAD, "余额不足（402），去服务商后台充值")
+    if r.status_code == 404:
+        return Check("AI 模型", BAD, f"地址或模型名不对（404）：{model}")
+    return Check("AI 模型", BAD, f"HTTP {r.status_code}")
 
 
 def check_weibo(cookie: str, uids: str) -> Check:
@@ -168,6 +177,7 @@ def run_all(env: dict[str, str], napcat_state: str = "",
         check_deps(),
         check_env_file(),
         check_napcat(env, napcat_state, bot_uptime),
-        check_deepseek(env.get("DEEPSEEK_API_KEY", "")),
+        check_deepseek(env.get("DEEPSEEK_API_KEY", ""),
+                       env.get("AI_BASE_URL", ""), env.get("AI_MODEL", "")),
         check_weibo(env.get("WEIBO_COOKIE", ""), env.get("WEIBO_UIDS", "")),
     ]

@@ -70,6 +70,9 @@ def resend_via_bot(title: str, source: str) -> tuple[bool, str]:
         return False, f"HTTP {r.status_code}"
     if data.get("ok"):
         return True, f"已补发给 {data.get('users', 0)} 人、{data.get('groups', 0)} 个群"
+    # 401 基本只会在「刚好重启了 bot、token 轮换」的一瞬间撞上，再点一次就好。
+    if r.status_code == 401:
+        return False, "token 对不上（多半是 bot 刚重启过），再点一次补发试试"
     return False, str(data.get("error", f"HTTP {r.status_code}"))
 
 

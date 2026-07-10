@@ -47,7 +47,7 @@ if app is not None:
 
     @app.post("/api/internal/resend")
     async def _resend(request: Request):
-        if request.headers.get("X-Wool-Token", "") != _TOKEN:
+        if not secrets.compare_digest(request.headers.get("X-Wool-Token", ""), _TOKEN):
             return JSONResponse({"ok": False, "error": "token 不对"}, status_code=401)
         try:
             body = await request.json()

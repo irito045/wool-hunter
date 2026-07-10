@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -20,9 +21,49 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_FILE = ROOT / "logs" / "bot.log"
+STDERR_FILE = ROOT / "logs" / "bot_stderr.log"
 
 # Windows 上不要弹黑框
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+DEFAULT_PORT = 8081
+
+
+def bot_port() -> int:
+    """bot 实际监听的端口，来自 `.env` 的 `PORT`。
+
+    ☠ 这个模块以前把 8081 写死在四个函数的默认参数里，而 `.env` 里的 `PORT` 是
+    用户可以在「配置 → 高级」里改的。改成 8082 之后：bot 跑得好好的，状态栏却
+    永远显示「未运行」；再点「启动」就会起第二个实例去抢 NapCat 的连接；
+    点「停止」一个都杀不掉。端口只能有一处事实来源。
+    """
+    from gui import envfile          # 延迟导入：envfile 不依赖本模块，但别把环也建起来
+    raw = (envfile.read_env().get("PORT") or "").strip().strip('"')
+    return int(raw) if raw.isdigit() else DEFAULT_PORT
+
+
+def bot_python() -> str:
+    """跑 bot 用哪个 Python。**必须和控制台自己是同一套 site-packages。**
+
+    以前这里写死 `"py"`。两个后果，都是静默的：
+
+    1. `py.exe` 挑的是「系统默认」那个 Python，而体检（`health._missing_packages`）
+       和「一键安装依赖」（`health.install_deps`）用的都是 `sys.executable`。两者不是
+       同一个解释器时，体检报「依赖都装好了」，bot 却起来就 ModuleNotFoundError——
+       而崩溃发生在 `bot.py` 配好 logging 之前，`logs/bot.log` 里一个字都没有。
+    2. 装了 Microsoft Store 版 Python 或只有 conda 的人**根本没有 `py.exe`**，
+       `Popen` 直接抛 FileNotFoundError。
+
+    所以用 `sys.executable`。但控制台是被 `pythonw.exe` 起的（不弹黑框），
+    而 bot 需要一个真的 stdout——`bot.py` 的 `StreamHandler` 要往那儿写。
+    同目录下的 `python.exe` 是同一个安装、同一份 site-packages，取它。
+    """
+    exe = Path(sys.executable)
+    if exe.name.lower().endswith("w.exe"):          # pythonw.exe → python.exe
+        twin = exe.with_name(exe.name.lower().replace("w.exe", ".exe"))
+        if twin.exists():
+            return str(twin)
+    return str(exe)
 
 
 def _run(cmd: list[str], timeout: int = 10) -> str:
@@ -34,8 +75,9 @@ def _run(cmd: list[str], timeout: int = 10) -> str:
         return ""
 
 
-def port_pid(port: int = 8081) -> int:
-    """谁在监听这个端口。0 表示没人。"""
+def port_pid(port: int | None = None) -> int:
+    """谁在监听这个端口。0 表示没人。不传 port 就问 `.env`。"""
+    port = port or bot_port()
     out = _run(["netstat", "-ano", "-p", "TCP"])
     for line in out.splitlines():
         parts = line.split()
@@ -90,7 +132,7 @@ def _start_time(pid: int) -> float:
     return got
 
 
-def status(port: int = 8081) -> Status:
+def status(port: int | None = None) -> Status:
     """便宜：只有 netstat（约 25ms）一定会跑，启动时间走 per-pid 缓存。
 
     首次见到某个 pid 时仍会冷启一次 PowerShell（约 1 秒），所以调用方
@@ -113,11 +155,19 @@ class BotRunner:
     不设的话 bot 会自己 `execv` 重启，那个新进程就脱离了本控制台的掌控。
     """
 
+    # 看门狗的「快速崩溃」闸：bot 起来后活不过这么多秒就算一次「秒退」。
+    # 连续 _CRASH_LIMIT 次秒退就停手，别再无脑拉起——那多半是配置/依赖坏了，
+    # 每 3 秒刷一行「3 秒后重启…」只会淹没真正的错误。
+    _CRASH_WINDOW_S = 15
+    _CRASH_LIMIT = 4
+
     def __init__(self, on_event=lambda msg: None):
         self._proc: subprocess.Popen | None = None
         self._guard: threading.Thread | None = None
         self._want_running = False
         self._on_event = on_event
+        self._spawned_at = 0.0
+        self._stderr_fp = None
 
     @property
     def owns_bot(self) -> bool:
@@ -129,7 +179,7 @@ class BotRunner:
         return self._proc is not None and self._proc.poll() is None
 
     # ── 对外 ──
-    def start(self, port: int = 8081) -> str:
+    def start(self, port: int | None = None) -> str:
         """返回空串表示已启动；否则返回拦下来的原因（人话）。"""
         st = status(port)
         if st.running:
@@ -137,12 +187,18 @@ class BotRunner:
                     f"如果那是你自己在命令行里起的，先把它关掉再点启动。")
 
         self._want_running = True
-        self._spawn()
+        try:
+            self._spawn()
+        except OSError as e:
+            # 连解释器都拉不起来（罕见）。别让异常冒泡到按钮回调——pythonw 没有
+            # stderr，那会变成「点了没反应」。回一句人话，让 UI 弹出来。
+            self._want_running = False
+            return f"启动失败：{type(e).__name__}: {e}\n找不到可用的 Python 解释器。"
         self._guard = threading.Thread(target=self._watch, daemon=True)
         self._guard.start()
         return ""
 
-    def stop(self, port: int = 8081) -> None:
+    def stop(self, port: int | None = None) -> None:
         """彻底停：先断自己的看门狗，再杀 bot。顺序反了就会被自己拉起来。"""
         self._want_running = False
         if self._proc and self._proc.poll() is None:
@@ -152,8 +208,9 @@ class BotRunner:
         if pid:
             _taskkill(pid)
         self._proc = None
+        self._close_stderr()
 
-    def restart(self, port: int = 8081) -> str:
+    def restart(self, port: int | None = None) -> str:
         self.stop(port)
         for _ in range(20):
             if not port_pid(port):
@@ -166,14 +223,51 @@ class BotRunner:
         env = dict(os.environ)
         env["WOOL_WATCHDOG"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
-        self._proc = subprocess.Popen(
-            ["py", "bot.py"], cwd=str(ROOT), env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=_NO_WINDOW,
-        )
+        self._spawned_at = time.time()
+        # stdout 丢弃（bot.log 已经记了同样的东西），但 stderr 一定要接住：
+        # 依赖缺失 / 语法错误发生在 bot.py 配好 logging 之前，那类回溯只会打到
+        # stderr。以前设成 DEVNULL，用户看到的就是「秒退循环 + 日志区空空如也」，
+        # 无从下手。写文件而不是 PIPE：PIPE 满了会把子进程卡住，且我们不常读它。
+        self._close_stderr()          # 关掉上一轮的句柄，别跨重启泄漏 fd
+        try:
+            STDERR_FILE.parent.mkdir(exist_ok=True)
+            self._stderr_fp = open(STDERR_FILE, "w", encoding="utf-8", errors="replace")
+        except OSError:
+            self._stderr_fp = None
+        try:
+            self._proc = subprocess.Popen(
+                [bot_python(), "bot.py"], cwd=str(ROOT), env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=self._stderr_fp or subprocess.DEVNULL,
+                creationflags=_NO_WINDOW,
+            )
+        except OSError as e:
+            # 连解释器都找不到（罕见：sys.executable 被删了）。别静默——
+            # 这个异常在 Tk 回调里没人接，而 pythonw 没有 stderr，用户会以为
+            # 「点了没反应」。抛给 start()/_watch() 的调用方去弹窗。
+            self._want_running = False
+            self._on_event(f"启动 bot 失败：{type(e).__name__}: {e}")
+            raise
         self._on_event(f"已启动 bot（PID {self._proc.pid}）")
 
+    def _close_stderr(self) -> None:
+        fp, self._stderr_fp = self._stderr_fp, None
+        if fp:
+            try:
+                fp.close()
+            except OSError:
+                pass
+
+    def _read_stderr_tail(self) -> str:
+        """bot_stderr.log 的尾部（最多 800 字符），用于秒退时告诉用户到底崩在哪。"""
+        try:
+            lines = STDERR_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return ""
+        return "\n".join(l for l in lines if l.strip())[-800:] if lines else ""
+
     def _watch(self) -> None:
+        recent_crashes = 0
         while self._want_running:
             p = self._proc
             if p is None:
@@ -184,10 +278,27 @@ class BotRunner:
                 continue
             if not self._want_running:
                 break
+            # 活了多久？秒退（起来没几秒就挂）多半是坏配置，不是偶发崩溃。
+            alive = time.time() - getattr(self, "_spawned_at", 0)
+            if alive < self._CRASH_WINDOW_S:
+                recent_crashes += 1
+            else:
+                recent_crashes = 0
+            if recent_crashes >= self._CRASH_LIMIT:
+                self._want_running = False
+                tail = self._read_stderr_tail()
+                hint = f"\n最后的错误：\n{tail}" if tail else \
+                    "\nlogs/bot_stderr.log 里有详情。多半是依赖没装齐或配置有误。"
+                self._on_event(f"bot 连续 {recent_crashes} 次秒退，已停止自动重启。{hint}")
+                self._close_stderr()      # 放弃重启这条路也要收句柄，别泄漏 fd
+                break
             self._on_event(f"bot 退出（代码 {code}），3 秒后重启…")
             time.sleep(3)
             if self._want_running:
-                self._spawn()
+                try:
+                    self._spawn()
+                except OSError:
+                    break
 
 
 class LogTailer:

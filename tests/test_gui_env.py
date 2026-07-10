@@ -225,5 +225,54 @@ class TestMisc(unittest.TestCase):
         self.assertEqual(envfile.mask(""), "")
 
 
+class TestAIProvider(unittest.TestCase):
+    """多服务商支持：下拉选一家 → 自动填地址/模型；底层协议对所有兼容服务一致。"""
+
+    BASE = {"WOOL_GROUP_IDS": "1", "FORWARD_GROUP_IDS": "1", "ADMIN_IDS": "1"}
+
+    def test_every_preset_roundtrips(self):
+        """每个预设的 base_url 都要能被 provider_for 反认回它自己——否则下拉框回显错。"""
+        for name, url, model, apply in envfile.AI_PROVIDERS:
+            if name == envfile.CUSTOM_PROVIDER:
+                continue
+            self.assertTrue(url and model, f"{name} 预设缺 url 或 model")
+            self.assertEqual(envfile.provider_for(url), name, f"{name} 回显不上")
+
+    def test_empty_base_is_deepseek(self):
+        """老 .env 没有 AI_BASE_URL 时，默认就是 DeepSeek（向后兼容）。"""
+        self.assertEqual(envfile.provider_for(""), "DeepSeek")
+
+    def test_unknown_base_is_custom(self):
+        self.assertEqual(envfile.provider_for("https://my-gw.internal/v1"),
+                         envfile.CUSTOM_PROVIDER)
+
+    def test_base_url_must_be_http(self):
+        errs = envfile.validate({**self.BASE, "AI_BASE_URL": "api.x.com"})
+        self.assertTrue(any("http" in e for e in errs))
+
+    def test_key_without_endpoint_is_rejected(self):
+        """填了 key 却把地址/模型清空 → AI 必然调不通，得当场拦住。"""
+        errs = envfile.validate({**self.BASE, "DEEPSEEK_API_KEY": "sk-x",
+                                 "AI_BASE_URL": "", "AI_MODEL": ""})
+        self.assertTrue(any("接口地址" in e for e in errs))
+        self.assertTrue(any("模型" in e for e in errs))
+
+    def test_no_key_no_endpoint_requirement(self):
+        """不填 key（只用正则）时，地址/模型空着是允许的。"""
+        self.assertEqual(envfile.validate(self.BASE), [])
+
+    def test_endpoint_join(self):
+        """base_url 拼 /chat/completions：各家写法不一，且不能重复拼接。"""
+        import sys as _sys
+        _sys.path.insert(0, str(_ROOT / "src"))
+        from services.deepseek_checker import ai_endpoint
+        self.assertEqual(ai_endpoint("https://api.deepseek.com"),
+                         "https://api.deepseek.com/chat/completions")
+        self.assertEqual(ai_endpoint("https://api.moonshot.cn/v1/"),
+                         "https://api.moonshot.cn/v1/chat/completions")
+        self.assertEqual(ai_endpoint("https://x/chat/completions"),
+                         "https://x/chat/completions")
+
+
 if __name__ == "__main__":
     unittest.main()

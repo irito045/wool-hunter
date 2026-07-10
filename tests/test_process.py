@@ -60,6 +60,36 @@ class TestStatus(unittest.TestCase):
         self.assertFalse(hasattr(process.BotRunner, "takeover"))
 
 
+class TestBotPortAndPython(unittest.TestCase):
+    """端口和解释器都不能再写死。
+
+    - 端口以前把 8081 写死在四个函数的默认参数里，而 PORT 是用户能在 .env 改的：
+      改成 8082 后状态栏永远「未运行」、启动会起第二个实例抢 NapCat。
+    - 解释器以前写死 `py`，和体检/装依赖用的 sys.executable 岔开，且没有 py.exe 的
+      环境（MS Store 版 / conda）直接 FileNotFoundError。
+    """
+
+    def test_bot_port_reads_env(self):
+        from gui import envfile
+        orig = envfile.read_env
+        try:
+            envfile.read_env = lambda *a, **k: {"PORT": "8082"}
+            self.assertEqual(process.bot_port(), 8082)
+            envfile.read_env = lambda *a, **k: {}
+            self.assertEqual(process.bot_port(), process.DEFAULT_PORT)
+            envfile.read_env = lambda *a, **k: {"PORT": "乱填"}
+            self.assertEqual(process.bot_port(), process.DEFAULT_PORT)
+        finally:
+            envfile.read_env = orig
+
+    def test_bot_python_is_real_interpreter(self):
+        """必须是 sys.executable 那一套，且不是无 stdout 的 pythonw。"""
+        py = process.bot_python()
+        self.assertTrue(py)
+        self.assertNotEqual(py, "py")
+        self.assertFalse(py.lower().endswith("w.exe"), "不该用没有 stdout 的 pythonw")
+
+
 class TestLogTailerIdentity(unittest.TestCase):
     def test_stat_never_includes_size(self):
         """身份里混进文件大小，每写一行日志身份就变，poll() 会从头重读整个文件——

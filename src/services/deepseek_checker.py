@@ -1,9 +1,16 @@
 """
-deepseek_checker.py — DeepSeek 辅助判定（2026-07-08 重构后只保留三处，都不判价格）：
+deepseek_checker.py — AI 辅助判定（2026-07-08 重构后只保留三处，都不判价格）：
   is_genuine_deal            质量把关：这条是不是「具体商品 + 可购买的优惠」
   match_keywords_semantically 关键词语义匹配（订「抽纸」也收到「纸巾/手帕纸」）
   classify_category          品类智能归类（词表没收录的商品，如「乐事」→零食）
 好价判价（is_good_deal_for_price）、单价折算、审核挡位相关代码已随重构删除。
+
+**模型无关**：底层只用 OpenAI 兼容的 /chat/completions 协议，所以 DeepSeek、Kimi、
+智谱 GLM、通义千问、OpenAI 等任何兼容该协议的服务都能用。三样东西从 .env 读：
+  DEEPSEEK_API_KEY  API Key（历史键名，沿用；对任何服务商都是这一个）
+  AI_BASE_URL       接口地址，默认 https://api.deepseek.com
+  AI_MODEL          模型名，默认 deepseek-chat
+不填后两个 = 走 DeepSeek，和以前完全一致（老部署无需改动）。
 """
 
 import asyncio
@@ -18,16 +25,32 @@ from .price_checker import strip_noise
 
 logger = logging.getLogger("deepseek")
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
-DEEPSEEK_ENABLED = bool(DEEPSEEK_API_KEY)
+AI_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+AI_BASE_URL = (os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com")
+AI_MODEL = (os.getenv("AI_MODEL", "").strip() or "deepseek-chat")
+# 有 key 才启用。名字沿用 DEEPSEEK_ENABLED，调用方都在读它。
+DEEPSEEK_ENABLED = bool(AI_API_KEY)
 
 _lock = asyncio.Lock()
 _last_call: float = 0.0
-_MIN_INTERVAL = 1.0  # 两次 DS 请求之间最少间隔（秒）
+_MIN_INTERVAL = 1.0  # 两次 AI 请求之间最少间隔（秒）
+
+
+def ai_endpoint(base_url: str = "") -> str:
+    """把 base_url 拼成完整的 /chat/completions 地址。
+
+    各家 base 写法不一：DeepSeek 是 `https://api.deepseek.com`，Kimi/OpenAI 是
+    `.../v1`。统一规则：去掉尾部斜杠后补 `/chat/completions`；若用户已经把整条
+    路径填全了（少数自建网关会这样），就不重复拼接。
+    """
+    base = (base_url or AI_BASE_URL).strip().rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return base + "/chat/completions"
 
 
 async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str | None:
-    """底层 DS 调用，返回回答原文；未配置或失败返回 None。"""
+    """底层 AI 调用，返回回答原文；未配置或失败返回 None。"""
     global _last_call
     if not DEEPSEEK_ENABLED:
         return None
@@ -38,13 +61,13 @@ async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str |
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(8.0), proxy=None, trust_env=False) as client:
                 resp = await client.post(
-                    "https://api.deepseek.com/chat/completions",
+                    ai_endpoint(),
                     headers={
-                        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                        "Authorization": f"Bearer {AI_API_KEY}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": "deepseek-chat",
+                        "model": AI_MODEL,
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": text[:800]},
@@ -57,7 +80,7 @@ async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str |
                 resp.raise_for_status()
                 return resp.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            logger.warning(f"[DS] 调用失败: {e}")
+            logger.warning(f"[AI] 调用失败: {e}")
             return None
         finally:
             _last_call = time.monotonic()

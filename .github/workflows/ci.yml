@@ -52,7 +52,10 @@ jobs:
                    src/data/state.json \
                    src/data/api_token.txt \
                    src/data/runtime.json \
-                   .env .env.tmp update_notes.txt; do
+                   src/data/subscribers.json.bak \
+                   src/data/events.jsonl.bak.before-cleanup \
+                   src/data/categories.json.tmp \
+                   .env .env.tmp .env.bak.clean .env.bak.napcat update_notes.txt; do
             if git check-ignore -q "$f"; then
               echo "🔒 $f"
             else
