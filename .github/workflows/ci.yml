@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 是 README 声明的最低版本；3.13 保证不被新版 Python 悄悄搞坏
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 语法检查（没有 linter，至少保证全部能编译）
+        run: python -m compileall -q src bot.py
+
+      - name: 单元测试
+        # 测试不联网、不需要 NapCat、不碰真实数据：
+        # DEEPSEEK_API_KEY 留空时所有 DS 调用直接返回「放行」，判定是确定性的。
+        env:
+          DEEPSEEK_API_KEY: ""
+        working-directory: tests
+        run: python -m unittest discover -v
+
+      - name: 确认 .gitignore 真的挡住了隐私文件
+        # gitignore 不支持行尾注释，写错了会静默失效——曾经差点把 2MB 的
+        # 真实群消息原文提交上去。这里让 git 自己回答，而不是靠肉眼看文件。
+        run: |
+          set -e
+          for f in src/data/events.jsonl \
+                   src/data/subscribers.json \
+                   src/data/feedback.json \
+                   src/data/feedback_index.json \
+                   src/data/judge_feedback.json \
+                   src/data/state.json \
+                   src/data/api_token.txt \
+                   src/data/runtime.json \
+                   .env .env.tmp update_notes.txt; do
+            if git check-ignore -q "$f"; then
+              echo "🔒 $f"
+            else
+              echo "::error::$f 没有被 .gitignore 忽略！它含真实 QQ 号/群号/群消息原文"
+              exit 1
+            fi
+          done
+          for f in src/data/categories.json src/data/filters.json; do
+            if git check-ignore -q "$f"; then
+              echo "::error::$f 被误忽略了，它应该进仓库"
+              exit 1
+            fi
+            echo "✅ $f 会被提交（正确）"
+          done

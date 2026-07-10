@@ -1,0 +1,64 @@
+# 密钥
+.env
+.env.bak*
+# 控制台原子写 .env 时的中间文件。进程在 replace 前被杀就会留下它，
+# 里面是完整的 key 和 Cookie。（gitignore 不支持行尾注释，注释必须单独成行）
+.env.tmp
+
+# 虚拟环境
+.venv/
+venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# ─────────────────────────────────────────────────────────
+# 运行时数据：都含真实 QQ 号 / 群号 / 群消息原文，绝不能进仓库。
+#
+# 注意：gitignore 不支持行尾注释！写成 `foo.json  # 说明` 会把整行
+# （连同注释）当作路径来匹配，规则静默失效。注释必须单独成行。
+#
+# 提交前务必 `git status` 核对一遍——一旦进了 commit 历史，
+# 光删文件是没用的，得 rewrite 整个历史。
+# ─────────────────────────────────────────────────────────
+
+# 微博轮询位置书签
+src/data/state.json
+# 订阅（含 QQ 号、群号）
+src/data/subscribers.json
+# 用户反馈票数与硬判定
+src/data/feedback.json
+# 消息 id → 原文索引
+src/data/feedback_index.json
+# 事件流水：真实群消息原文、淘口令、推送目标
+src/data/events.jsonl
+# 看板判定反馈（key 里嵌商品标题）
+src/data/judge_feedback.json
+# 暂停/恢复状态
+src/data/runtime.json
+# 更新说明指纹
+src/data/update_notes_sent.txt
+# 内部接口的 token：拿到它就能让 bot 往你的群里发消息
+src/data/api_token.txt
+# 各种自动备份，内容同上。`*.bak*` 而不是 `*.bak`：
+# events.jsonl.bak.before-cleanup 这种带后缀的备份里也是几千条群消息原文。
+src/data/*.bak*
+src/data/*.tmp
+
+# 本次更新说明：内容是写给「这个部署的管理员」看的，每个人各写各的。
+# 进了仓库的话，别人 clone 下来第一次启动，bot 会把我的更新说明私信给他自己。
+# 文件不存在时 _read_update_notes() 返回空串，什么也不会发，正好。
+update_notes.txt
+
+# 有意保留在仓库里的（别加进上面）：
+#   src/data/categories.json  品类→关键词表，23 类 617 词，项目的核心资产
+#   src/data/filters.json     10 类噪音拦截开关，纯配置
+
+# 日志
+*.log
+logs/
+
+# 系统文件
+.DS_Store
+Thumbs.db
