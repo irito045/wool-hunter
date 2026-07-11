@@ -58,7 +58,7 @@ Corollary: **finish the whole round of changes, then restart once.** Every resta
 
 **Run the tests** (stdlib `unittest`, no extra deps, no network, no NapCat — DS is disabled by an empty `DEEPSEEK_API_KEY` so verdicts are deterministic):
 ```bash
-cd tests && python -m unittest discover -v     # ~180 tests, a few seconds
+cd tests && python -m unittest discover -v     # ~200 tests, a few seconds
 ```
 `tests/helpers.py:IsolatedDataTest` redirects every module-level data path (`EVENTS_FILE`, `FEEDBACK_FILE`, `SUBSCRIBERS_FILE`, `_FILTERS_FILE`) plus their mtime caches to a temp dir. These paths are computed **at import time**, so isolation means patching module attributes, not env vars — miss one and a test run rewrites your real subscriptions. Plugin modules can't be imported (they call `get_driver()` at import), so `helpers.load_plugin_funcs()` pulls individual functions out via `ast`.
 
@@ -123,7 +123,7 @@ Two heuristics that look tweakable but are load-bearing:
 - Keyword and category subs still have to clear `passes_quality`. That is intentional: a farming post that happens to contain your keyword should not be pushed.
 
 ### Storage is flat JSON files, no database
-Everything in `src/data/`: `subscribers.json` (the three sub lists + `blocked_words`; **only ever touch it through `services/subscriptions.py`** — `load_subscribers()` migrates the old format on read, sanitizes dirty rows, and can never raise; `save_subscribers()` does `.bak` + atomic `.tmp` replace), `categories.json` (category→keyword map, 23 categories / ~617 words, hot-reloaded via mtime cache, editable from both the console and `/w cat` in QQ), `filters.json` (noise-category on/off switches; missing key = on, so a new category ships enabled; hot-reloaded), `runtime.json` (the pause switch; mtime-hot-reloaded so the console can flip it), `api_token.txt` (regenerated each start; whoever holds it can make the bot post), `feedback.json` / `judge_feedback.json` (two user-feedback loops — quoted-reply votes vs. console judgments), `events.jsonl` (audit trail; **self-rotates at ~2MB keeping only the newer half**, so feedback referencing rotated-out rows can never have its full text recovered), `state.json` (Weibo poll-position bookmark). `price_lines.json` is an orphan left over from the deleted good-price judge — nothing reads it.
+Everything in `src/data/`: `subscribers.json` (the three sub lists + `blocked_words`; **only ever touch it through `services/subscriptions.py`** — `load_subscribers()` migrates the old format on read, sanitizes dirty rows, and can never raise; `save_subscribers()` does `.bak` + atomic `.tmp` replace), `categories.json` (category→keyword map, 23 categories / ~617 words, hot-reloaded via mtime cache, editable from both the console and `/w cat` in QQ), `filters.json` (noise-category on/off switches; missing key = on, so a new category ships enabled; hot-reloaded), `runtime.json` (the pause switch; mtime-hot-reloaded so the console can flip it), `api_token.txt` (regenerated each start; whoever holds it can make the bot post), `feedback.json` / `judge_feedback.json` (two user-feedback loops — quoted-reply votes vs. console judgments), `events.jsonl` (audit trail; **self-rotates at ~2MB keeping only the newer half**, so feedback referencing rotated-out rows can never have its full text recovered), `state.json` (Weibo poll-position bookmark).
 
 `load_subscribers()` is called on **every incoming message**, which is exactly why it is written to never throw: one malformed row (a `null` list, an `owner` that isn't a number) used to be enough to stop all pushes site-wide, with the bad file unable to heal itself.
 
@@ -295,7 +295,7 @@ py bot.py               # 前台，跑一次——只用于调试
 
 **跑测试**（标准库 `unittest`，无额外依赖、不联网、不需要 NapCat —— `DEEPSEEK_API_KEY` 置空会关掉 DS，判定因此是确定性的）：
 ```bash
-cd tests && python -m unittest discover -v     # 约 180 个测试，几秒钟
+cd tests && python -m unittest discover -v     # 约 200 个测试，几秒钟
 ```
 `tests/helpers.py:IsolatedDataTest` 把每一个模块级的数据路径（`EVENTS_FILE`、`FEEDBACK_FILE`、`SUBSCRIBERS_FILE`、`_FILTERS_FILE`）连同它们的 mtime 缓存一起重定向到临时目录。这些路径是在 **import 时**算出来的，所以隔离手段是改模块属性，不是改环境变量——漏掉一个，跑一次测试就会把你真实的订阅覆盖掉。插件模块没法直接 import（它们在 import 时就调 `get_driver()`），所以 `helpers.load_plugin_funcs()` 用 `ast` 把单个函数抽出来。
 
@@ -356,7 +356,7 @@ DeepSeek 只用在三个地方，没有一处判价：`is_genuine_deal`（质量
 - 关键词和品类订阅仍然必须过 `passes_quality`。这是有意的：一条恰好含有你关键词的薅羊毛帖，不该被推送。
 
 ### 存储是扁平的 JSON 文件，没有数据库
-全都在 `src/data/` 下：`subscribers.json`（三份订阅列表 + `blocked_words`；**只能通过 `services/subscriptions.py` 去碰它** —— `load_subscribers()` 在读取时迁移老格式、清洗脏行，并且永远不会抛异常；`save_subscribers()` 会做 `.bak` + 原子 `.tmp` 替换）、`categories.json`（品类→关键词映射，23 个品类 / 约 617 个词，靠 mtime 缓存热加载，控制台和 QQ 里的 `/w cat` 都能改）、`filters.json`（噪音类别的开关；键缺失 = 开启，所以新类别默认是启用的；热加载）、`runtime.json`（暂停开关；mtime 热加载，所以控制台能翻它）、`api_token.txt`（每次启动重新生成；拿到它就能让 bot 发消息）、`feedback.json` / `judge_feedback.json`（两套用户反馈闭环——引用回复投票 vs 控制台判定）、`events.jsonl`（审计流水；**到约 2MB 会自动轮转，只保留较新的一半**，所以引用了已被轮转掉的行的反馈，其全文永远找不回来了）、`state.json`（微博轮询位置书签）。`price_lines.json` 是已删除的好价判定器留下的孤儿——没有任何代码读它。
+全都在 `src/data/` 下：`subscribers.json`（三份订阅列表 + `blocked_words`；**只能通过 `services/subscriptions.py` 去碰它** —— `load_subscribers()` 在读取时迁移老格式、清洗脏行，并且永远不会抛异常；`save_subscribers()` 会做 `.bak` + 原子 `.tmp` 替换）、`categories.json`（品类→关键词映射，23 个品类 / 约 617 个词，靠 mtime 缓存热加载，控制台和 QQ 里的 `/w cat` 都能改）、`filters.json`（噪音类别的开关；键缺失 = 开启，所以新类别默认是启用的；热加载）、`runtime.json`（暂停开关；mtime 热加载，所以控制台能翻它）、`api_token.txt`（每次启动重新生成；拿到它就能让 bot 发消息）、`feedback.json` / `judge_feedback.json`（两套用户反馈闭环——引用回复投票 vs 控制台判定）、`events.jsonl`（审计流水；**到约 2MB 会自动轮转，只保留较新的一半**，所以引用了已被轮转掉的行的反馈，其全文永远找不回来了）、`state.json`（微博轮询位置书签）。
 
 `load_subscribers()` 在**每一条进来的消息**上都会被调用，这正是它被写成永不抛异常的原因：一条畸形记录（一个 `null` 列表、一个不是数字的 `owner`）曾经足以让全站停推，而那个坏文件自己无法愈合。
 
