@@ -24,6 +24,11 @@ from tkinter import messagebox, ttk
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+# 窗口 / 任务栏 / 托盘共用这一个图标。不设的话，tkinter 会用它自带的羽毛图标，
+# 托盘会用 Windows 的通用程序图标——两个都是「一看就没人管过」的默认货。
+# ⚠ 别叫 ICON：这个模块里 ICON 已经是体检状态图标的字典（✔ / ! / ✘），会被覆盖。
+APP_ICON = Path(__file__).resolve().parent / "wool.ico"
+
 from gui import envfile, health, napcat, process, tray, weibo_login   # noqa: E402
 from gui.napcat_dialog import NapCatQRDialog            # noqa: E402
 from gui.overview import OverviewTab                    # noqa: E402
@@ -109,6 +114,13 @@ class Console(tk.Tk):
         self.title("羊毛猎人 · 控制台")
         self.geometry("980x720")
         self.minsize(880, 620)
+        # default=… 让所有 Toplevel（扫码弹窗等）都跟着用同一个图标，不用逐个设。
+        # 图标缺失绝不能让控制台起不来——它只是好看，不是功能。
+        try:
+            if APP_ICON.exists():
+                self.iconbitmap(default=str(APP_ICON))
+        except tk.TclError:
+            pass
 
         # 必须在 BotRunner 之前：on_event=self._log_line 会立刻被绑走，
         # 而 _log_line 第一行就读这个变量。
@@ -149,6 +161,7 @@ class Console(tk.Tk):
             on_exit=self._exit_app,
             is_bot_running=lambda: process.port_pid() > 0,
             schedule=lambda fn: self.after(0, fn),
+            icon_path=APP_ICON if APP_ICON.exists() else None,
         )
         self._tray_ok = self._tray.start()
         self._told_tray = False
@@ -1017,11 +1030,25 @@ class Console(tk.Tk):
             self._exit_app()
 
     def _hide_to_tray(self) -> None:
-        self.withdraw()
+        """点 X = 缩到托盘。**必须让用户知道发生了什么。**
+
+        原来只发一个气泡通知，但 Win11 上气泡经常被通知设置 / 专注助手静默掉——
+        用户看到的就是「窗口凭空消失了」，也分不清是最小化了还是把 bot 关了。
+        所以第一次缩起来时用对话框（一定看得见）把话说清楚，之后每次再发气泡轻提示。
+
+        对话框要在 withdraw() **之前**弹：窗口还在，弹窗才有正常的父窗口和位置。
+        """
         if not self._told_tray:
             self._told_tray = True
-            self._tray.notify("羊毛猎人还在后台运行",
-                              "控制台已缩到托盘，bot 照常推送。双击托盘图标打开它。")
+            messagebox.showinfo(
+                "已缩到托盘（不是退出）",
+                "控制台缩到了右下角托盘里的 🐑 图标，bot 还在后台正常推送。\n\n"
+                "· 双击托盘图标 → 重新打开控制台\n"
+                "· 右键托盘图标 →「退出控制台」才是真正退出\n\n"
+                "（本次运行只提示这一次）")
+        self.withdraw()
+        self._tray.notify("羊毛猎人还在后台运行",
+                          "控制台已缩到托盘，bot 照常推送。双击图标可以打开它。")
 
     def _show_from_tray(self) -> None:
         self.deiconify()

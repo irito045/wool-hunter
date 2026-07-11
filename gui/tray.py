@@ -34,7 +34,11 @@ _WM_RBUTTONUP = 0x0205
 
 _NIM_ADD, _NIM_MODIFY, _NIM_DELETE = 0x0, 0x1, 0x2
 _NIF_MESSAGE, _NIF_ICON, _NIF_TIP, _NIF_INFO = 0x1, 0x2, 0x4, 0x10
+_NIIF_INFO = 0x1                        # 气泡左边那个信息图标
 _IDI_APPLICATION = 32512
+_IMAGE_ICON = 1
+_LR_LOADFROMFILE = 0x0010
+_SM_CXSMICON, _SM_CYSMICON = 49, 50     # 托盘图标该多大（跟着 DPI 走）
 _WS_OVERLAPPED = 0x00000000
 _HWND_MESSAGE = -3
 
@@ -99,6 +103,10 @@ def _setup() -> None:
     u.DefWindowProcW.argtypes = [HWND, UINT, WPARAM, LPARAM]
     u.LoadIconW.restype = HICON
     u.LoadIconW.argtypes = [wintypes.HINSTANCE, LPCWSTR]
+    u.LoadImageW.restype = wintypes.HANDLE
+    u.LoadImageW.argtypes = [wintypes.HINSTANCE, LPCWSTR, UINT, cint, cint, UINT]
+    u.GetSystemMetrics.restype = cint
+    u.GetSystemMetrics.argtypes = [cint]
     u.GetMessageW.restype = cint
     u.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), HWND, UINT, UINT]
     u.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
@@ -132,8 +140,9 @@ class Tray:
     """
 
     def __init__(self, tooltip, on_show, on_toggle_bot, on_exit,
-                 is_bot_running, schedule) -> None:
+                 is_bot_running, schedule, icon_path=None) -> None:
         self._tooltip = tooltip[:127]
+        self._icon_path = str(icon_path) if icon_path else ""
         self._on_show = on_show
         self._on_toggle_bot = on_toggle_bot
         self._on_exit = on_exit
@@ -180,9 +189,25 @@ class Tray:
             nid.uFlags = _NIF_INFO
             nid.szInfo = msg[:255]
             nid.szInfoTitle = title[:63]
+            nid.dwInfoFlags = _NIIF_INFO
             ctypes.windll.shell32.Shell_NotifyIconW(_NIM_MODIFY, ctypes.byref(nid))
         except Exception:
             pass
+
+    def _load_icon(self, u):
+        """加载 wool.ico 里那个「小图标」尺寸的分辨率。
+
+        按 `SM_CXSMICON` 要尺寸（而不是写死 16），高 DPI 屏上系统会去 .ico 里挑
+        更大的那一档，图标才不糊。文件缺失或加载失败就退回系统通用图标——
+        图标丑一点无所谓，绝不能因此让托盘挂不上。
+        """
+        if self._icon_path:
+            cx = u.GetSystemMetrics(_SM_CXSMICON) or 16
+            cy = u.GetSystemMetrics(_SM_CYSMICON) or 16
+            h = u.LoadImageW(None, self._icon_path, _IMAGE_ICON, cx, cy, _LR_LOADFROMFILE)
+            if h:
+                return h
+        return u.LoadIconW(None, ctypes.cast(_IDI_APPLICATION, wintypes.LPCWSTR))
 
     # ── 内部：托盘线程 ──
     def _base_nid(self) -> _NOTIFYICONDATA:
@@ -209,7 +234,7 @@ class Tray:
             if not self._hwnd:
                 self._ready.set()
                 return
-            hicon = u.LoadIconW(None, ctypes.cast(_IDI_APPLICATION, wintypes.LPCWSTR))
+            hicon = self._load_icon(u)
             nid = self._base_nid()
             nid.uFlags = _NIF_MESSAGE | _NIF_ICON | _NIF_TIP
             nid.uCallbackMessage = _WM_TRAYCALLBACK
