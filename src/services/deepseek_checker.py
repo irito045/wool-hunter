@@ -21,6 +21,7 @@ import time
 
 import httpx
 
+from .net import NO_PROXY
 from .price_checker import strip_noise
 
 logger = logging.getLogger("deepseek")
@@ -59,7 +60,7 @@ async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str |
         if gap > 0:
             await asyncio.sleep(gap)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(8.0), proxy=None, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(8.0), **NO_PROXY) as client:
                 resp = await client.post(
                     ai_endpoint(),
                     headers={

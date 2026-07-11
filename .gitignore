@@ -37,6 +37,8 @@ src/data/events.jsonl
 src/data/judge_feedback.json
 # 暂停/恢复状态
 src/data/runtime.json
+# 控制台的个人偏好（点 ✕ 是最小化还是退出）。每台机器各不相同，不是项目配置。
+src/data/console_prefs.json
 # 更新说明指纹
 src/data/update_notes_sent.txt
 # 内部接口的 token：拿到它就能让 bot 往你的群里发消息

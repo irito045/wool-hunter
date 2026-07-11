@@ -52,6 +52,7 @@ jobs:
                    src/data/state.json \
                    src/data/api_token.txt \
                    src/data/runtime.json \
+                   src/data/console_prefs.json \
                    src/data/subscribers.json.bak \
                    src/data/events.jsonl.bak.before-cleanup \
                    src/data/categories.json.tmp \

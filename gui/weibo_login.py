@@ -48,13 +48,27 @@ def _unwrap(text: str) -> dict:
         return {}
 
 
+def _no_proxy() -> dict:
+    """和 bot 一样直连，不走系统代理。见 services/net.py 里那段说明。
+
+    这里尤其要紧：probe 是「扫码到底成没成功」的唯一判据。它要是走了代理而代理不通，
+    就会把一次**成功的登录**判成失败，用户被告知「没换到有效 Cookie」。
+    """
+    try:
+        from services.net import NO_PROXY
+        return NO_PROXY
+    except Exception:                    # services 不在 path 上时（不该发生）也别崩
+        return {"proxy": None, "trust_env": False}
+
+
 def probe_cookie(cookie: str, uid: str) -> object:
     """拿 Cookie 打一次 m.weibo.cn 真实接口。返回 `ok`（1=有效，-100=未登录）。"""
     import httpx
     try:
         r = httpx.get("https://m.weibo.cn/api/container/getIndex",
                       params={"containerid": "107603" + uid, "count": "1"},
-                      headers={"User-Agent": _UA_MOBILE, "Cookie": cookie}, timeout=15)
+                      headers={"User-Agent": _UA_MOBILE, "Cookie": cookie},
+                      timeout=15, **_no_proxy())
         return r.json().get("ok")
     except Exception:
         return None
@@ -78,7 +92,7 @@ class NativeQR:
         import httpx
         self._c = httpx.Client(headers={"User-Agent": _UA_PC,
                                         "Referer": "https://weibo.com/"},
-                               timeout=15, follow_redirects=True)
+                               timeout=15, follow_redirects=True, **_no_proxy())
         self.qrid = ""
         self._alt = ""
 

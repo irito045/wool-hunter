@@ -29,7 +29,9 @@ sys.path.insert(0, str(ROOT / "src"))
 # ⚠ 别叫 ICON：这个模块里 ICON 已经是体检状态图标的字典（✔ / ! / ✘），会被覆盖。
 APP_ICON = Path(__file__).resolve().parent / "wool.ico"
 
-from gui import envfile, health, napcat, process, tray, weibo_login   # noqa: E402
+from gui import (close_dialog, envfile, health, napcat,   # noqa: E402
+                 prefs, process, tray, weibo_login)
+from gui.close_dialog import CloseDialog                 # noqa: E402
 from gui.napcat_dialog import NapCatQRDialog            # noqa: E402
 from gui.overview import OverviewTab                    # noqa: E402
 from gui.subs_dialog import AddSubDialog                # noqa: E402
@@ -75,6 +77,24 @@ def _dpi_aware() -> None:
     try:
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
+
+def _set_app_id() -> None:
+    """让**任务栏**也用我们自己的图标，而不是 Python 那个。
+
+    Windows 的任务栏按钮是按 AppUserModelID 归组、取图标的。`pythonw.exe` 起的脚本
+    默认继承 Python 自己的 AppID，于是任务栏永远显示 Python 图标——哪怕 `iconbitmap`
+    已经把标题栏和 Alt-Tab 的图标换掉了（这正是「图标有了，但任务栏还是 py 图标」）。
+    给进程显式指定一个自己的 AppID，任务栏才会改用窗口图标。
+
+    必须在**创建窗口之前**调用，建完再设就晚了。
+    """
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "irito045.woolhunter.console")
     except Exception:
         pass
 
@@ -197,6 +217,7 @@ class Console(tk.Tk):
         ttk.Button(box, text="重新检查", command=self.run_health).pack(anchor="w", pady=(8, 0))
 
         self._build_napcat_card(f)
+        self._build_close_pref(f)
 
         logbox = ttk.LabelFrame(f, text=" 实时日志（logs/bot.log） ", padding=6)
         logbox.pack(fill="both", expand=True, pady=(12, 0))
@@ -340,6 +361,24 @@ class Console(tk.Tk):
         self.napcat.stop(inst)
         self._log_line("[NapCat] 已停止", raw=True)
         self.run_health()
+
+    def _build_close_pref(self, parent: ttk.Widget) -> None:
+        """点 ✕ 的行为。
+
+        关闭弹窗里勾了「记住我的选择」之后，必须有地方能改回来——否则用户一次误勾
+        「直接退出」，以后每次点 ✕ 都会把 bot 停掉，还找不到开关在哪。
+        """
+        box = ttk.LabelFrame(parent, text=" 点窗口右上角 ✕ 时 ", padding=10)
+        box.pack(fill="x", pady=(10, 0))
+        self._close_pref = tk.StringVar(value=prefs.close_action())
+        row = ttk.Frame(box)
+        row.pack(fill="x")
+        for val, text in ((prefs.ASK, "每次都问我"),
+                          (prefs.TRAY, "最小化到托盘（bot 继续跑）"),
+                          (prefs.EXIT, "退出控制台")):
+            ttk.Radiobutton(row, text=text, value=val, variable=self._close_pref,
+                            command=lambda: prefs.set_close_action(self._close_pref.get())
+                            ).pack(side="left", padx=(0, 18))
 
     def run_health(self) -> None:
         for w in self.health_rows.winfo_children():
@@ -1021,32 +1060,46 @@ class Console(tk.Tk):
 
         threading.Thread(target=runner, daemon=True).start()
 
-    # ── 托盘：X 缩托盘，真退出走 _exit_app ──
+    # ── 关闭：X 让用户自己选「最小化 / 退出」──
     def _on_x(self) -> None:
-        """点右上角 X：有托盘就缩进去，bot 继续跑；没托盘就照旧退出。"""
-        if self._tray_ok:
+        """点右上角 ✕。
+
+        默认**问一句**：最小化到托盘，还是退出？两者后果差别很大（一个 bot 继续跑，
+        一个可能把 bot 一起停掉），不该由我们替用户猜。用户可以勾「记住我的选择」，
+        之后就直接执行，不再打扰。
+
+        托盘挂不上时（非 Windows / 初始化失败）没有「最小化」这条路，直接走退出。
+        """
+        if not self._tray_ok:
+            self._exit_app()
+            return
+
+        action = prefs.close_action()
+        if action == prefs.TRAY:
+            self._hide_to_tray()
+            return
+        if action == prefs.EXIT:
+            self._exit_app()
+            return
+
+        CloseDialog(self, bot_running=self.runner.owns_bot or process.port_pid() > 0,
+                    on_done=self._on_close_choice)
+
+    def _on_close_choice(self, choice: str, remember: bool) -> None:
+        if choice == close_dialog.CANCEL:
+            return
+        if remember:
+            prefs.set_close_action(
+                prefs.TRAY if choice == close_dialog.TRAY else prefs.EXIT)
+        if choice == close_dialog.TRAY:
             self._hide_to_tray()
         else:
             self._exit_app()
 
     def _hide_to_tray(self) -> None:
-        """点 X = 缩到托盘。**必须让用户知道发生了什么。**
-
-        原来只发一个气泡通知，但 Win11 上气泡经常被通知设置 / 专注助手静默掉——
-        用户看到的就是「窗口凭空消失了」，也分不清是最小化了还是把 bot 关了。
-        所以第一次缩起来时用对话框（一定看得见）把话说清楚，之后每次再发气泡轻提示。
-
-        对话框要在 withdraw() **之前**弹：窗口还在，弹窗才有正常的父窗口和位置。
-        """
-        if not self._told_tray:
-            self._told_tray = True
-            messagebox.showinfo(
-                "已缩到托盘（不是退出）",
-                "控制台缩到了右下角托盘里的 🐑 图标，bot 还在后台正常推送。\n\n"
-                "· 双击托盘图标 → 重新打开控制台\n"
-                "· 右键托盘图标 →「退出控制台」才是真正退出\n\n"
-                "（本次运行只提示这一次）")
         self.withdraw()
+        # 气泡是「轻提示」，Win11 上可能被专注助手静默——所以它只是锦上添花，
+        # 真正把话说清楚的是关闭时那个选择弹窗。
         self._tray.notify("羊毛猎人还在后台运行",
                           "控制台已缩到托盘，bot 照常推送。双击图标可以打开它。")
 
@@ -1082,22 +1135,50 @@ class Console(tk.Tk):
     def _exit_app(self) -> None:
         """真正退出控制台：把这个项目在后台留下的东西一起收干净。
 
+        ☠ **探测和杀进程都必须走后台线程。**实测在 Tk 主线程上要 3.2 秒
+        （netstat 71ms + napcat.find_install 1.1s + owned_pids 2.0s，后两个是
+        PowerShell 冷启动），期间窗口整个冻住——用户点了「退出」之后对着一个
+        卡死的白窗口干等，这就是「退出卡顿」。
+
         可能是从托盘「退出」进来的（窗口正被 withdraw 藏着），所以先 deiconify，
-        否则下面那个确认框会开在看不见的地方。
+        否则确认框会开在看不见的地方。
+        """
+        self.deiconify()
+        self.status_lbl.config(text="● 正在检查后台进程…", foreground=C_MUTED)
+
+        def probe() -> None:
+            running = self._running_pieces()          # 慢：netstat + 两次 PowerShell
+            self.after(0, lambda: self._ask_stop(running))
+
+        threading.Thread(target=probe, daemon=True).start()
+
+    def _ask_stop(self, running: list[str]) -> None:
+        """探测完了，回到 Tk 线程问用户。
 
         列表是**当场探测**出来的，并且逐条报给用户看——「一并关闭」是个不可逆动作，
         不能让它悄悄多杀或少杀一个进程。NapCat 只杀它自己安装目录底下的那些，
         用户电脑上那个真的 QQ 客户端进程名一样，绝不能碰（见 napcat._under）。
         """
-        self.deiconify()
-        running = self._running_pieces()
-        if running:
-            names = "\n".join(f"  • {n}" for n in running)
-            if messagebox.askyesno(
-                    "关闭控制台",
-                    f"下面这些还在后台跑着：\n\n{names}\n\n"
-                    f"要一起停掉吗？\n选「否」则它们继续在后台跑（bot 会照常推送）。"):
-                self._stop_everything()
+        if not running:
+            self._finish_exit()
+            return
+        names = "\n".join(f"  • {n}" for n in running)
+        if not messagebox.askyesno(
+                "关闭控制台",
+                f"下面这些还在后台跑着：\n\n{names}\n\n"
+                f"要一起停掉吗？\n选「否」则它们继续在后台跑（bot 会照常推送）。"):
+            self._finish_exit()
+            return
+
+        self.status_lbl.config(text="● 正在停止…", foreground=C_MUTED)
+
+        def work() -> None:
+            self._stop_everything()                  # 慢：taskkill + PowerShell
+            self.after(0, self._finish_exit)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_exit(self) -> None:
         # 看门狗必须先断，否则 destroy() 之后它还会把 bot 拉起来
         self.runner._want_running = False
         if self._tray_ok:
@@ -1130,6 +1211,7 @@ class Console(tk.Tk):
 
 def main() -> None:
     _dpi_aware()
+    _set_app_id()        # 必须在 Console() 之前：任务栏图标只认建窗口那一刻的 AppID
     app = Console()
     app.mainloop()
 

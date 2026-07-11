@@ -20,6 +20,7 @@ import logging
 logger = logging.getLogger("weibo")
 
 from ..services.forwarder import forward_message
+from ..services.net import NO_PROXY
 from ..services.subscriptions import load_subscribers as _load_subscribers
 from ..services.dispatch import dispatch_deal
 
@@ -135,7 +136,7 @@ async def fetch_weibo_entries(uid: str) -> tuple[list[dict], bool, str]:
         headers["Cookie"] = WEIBO_COOKIE
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), proxy=None, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), **NO_PROXY) as client:
             resp = await client.get(WEIBO_API, params=params, headers=headers)
             resp.raise_for_status()
             data = resp.json()

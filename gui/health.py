@@ -81,15 +81,18 @@ def check_deepseek(api_key: str, base_url: str = "", model: str = "") -> Check:
         return Check("AI 模型", WARN,
                      "没填。AI 环节会一律放行，只剩正则过滤，噪音会多一些。")
     from services.deepseek_checker import ai_endpoint   # ROOT/src 已在 sys.path 上
+    from services.net import NO_PROXY
     model = (model or "").strip() or "deepseek-chat"
     try:
         import httpx
+        # **NO_PROXY 不能省**：bot 是直连的，体检必须走同一条路。用 httpx 的默认设置
+        # 会去读 HTTPS_PROXY，代理没开就报 ConnectError——而 bot 正刷着 200 OK。
         r = httpx.post(
             ai_endpoint(base_url),
             headers={"Authorization": f"Bearer {key}"},
             json={"model": model, "max_tokens": 1,
                   "messages": [{"role": "user", "content": "hi"}]},
-            timeout=15,
+            timeout=15, **NO_PROXY,
         )
     except Exception as e:
         return Check("AI 模型", BAD, f"连不上：{type(e).__name__}")
@@ -111,12 +114,14 @@ def check_weibo(cookie: str, uids: str) -> Check:
     ck = (cookie or "").strip().strip('"')
     try:
         import httpx
+        from services.net import NO_PROXY
         headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)"}
         if ck:
             headers["Cookie"] = ck
+        # 同上：必须和 bot 的 weibo_monitor 走同一条路，否则体检报的红是假的
         r = httpx.get("https://m.weibo.cn/api/container/getIndex",
                       params={"containerid": f"107603{uid.strip()}", "count": 1},
-                      headers=headers, timeout=15)
+                      headers=headers, timeout=15, **NO_PROXY)
         data = r.json()
     except Exception as e:
         return Check("微博", BAD, f"请求失败：{type(e).__name__}")
