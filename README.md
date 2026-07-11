@@ -95,15 +95,27 @@
 
 ### 2. 下载本项目
 
+**不用装 git，直接下压缩包** → **[点这里下载最新版 zip](https://github.com/irito045/wool-hunter/releases/latest)**（在 Assets 里选 `wool-hunter-v*.zip`，约 250KB）
+
+解压到任意位置（比如 `D:\wool-hunter`）。然后在这个文件夹里按住 `Shift` + 右键 → 「在此处打开 PowerShell 窗口」，装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+<details>
+<summary>会用 git 的话，也可以 clone</summary>
+
 ```bash
 git clone https://github.com/irito045/wool-hunter.git
 cd wool-hunter
 pip install -r requirements.txt
 ```
-
-没装 git 的话，在 GitHub 页面点 `Code` → `Download ZIP`，解压出来即可。
+</details>
 
 > 电脑装了多个 Python 时，`pip` 可能装到了别的版本里。保险写法是 `python -m pip install -r requirements.txt`。
+>
+> GitHub 下载慢的话，多刷几次，或者用浏览器的下载工具续传——文件只有 250KB 左右，一般几秒就好。
 
 ### 3. 下载 NapCatQQ（让机器人能收发 QQ 消息）
 
