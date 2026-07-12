@@ -164,6 +164,7 @@ class Console(tk.Tk):
         self.overview = OverviewTab(nb, self._log_line)
         nb.add(self.overview, text="  总览  ")
         self._build_run_tab(nb)
+        self._build_log_tab(nb)
         self._build_config_tab(nb)
         self._build_subs_tab(nb)
         self._build_cats_tab(nb)
@@ -219,24 +220,59 @@ class Console(tk.Tk):
         self._build_napcat_card(f)
         self._build_close_pref(f)
 
-        logbox = ttk.LabelFrame(f, text=" 实时日志（logs/bot.log） ", padding=6)
-        logbox.pack(fill="both", expand=True, pady=(12, 0))
+    # ══════════════ 日志 ══════════════
+    def _build_log_tab(self, nb: ttk.Notebook) -> None:
+        """日志单独一页。
+
+        它以前挤在「运行」页最底下，上面压着体检 + NapCat + 关闭偏好三块固定高度的
+        内容，日志只能捡剩下的空间——实测只剩 3 行，等于没用。给它整整一页，
+        跟「总览」的流水一样铺满。
+
+        启停按钮在顶栏（跟标签页无关，始终可见），所以在这一页照样能一边操作一边看日志。
+        """
+        f = ttk.Frame(nb, padding=12)
+        nb.add(f, text="  日志  ")
+
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", pady=(0, 6))
+        tk.Label(bar, text="bot 的实时输出（logs/bot.log），出问题先看这里。",
+                 font=FONT, fg=C_MUTED).pack(side="left")
         # 日志默认「最新在下」（终端习惯），总览默认「最新在上」。两边都能自己翻。
-        logbar = ttk.Frame(logbox)
-        logbar.pack(fill="x", pady=(0, 4))
-        ttk.Checkbutton(logbar, text="最新在上", variable=self._log_newest_first,
+        ttk.Checkbutton(bar, text="最新在上", variable=self._log_newest_first,
                         command=self._toggle_log_order).pack(side="right")
-        self.log = tk.Text(logbox, font=MONO, wrap="none", height=14,
+        ttk.Button(bar, text="清空显示", width=10,
+                   command=self._clear_log).pack(side="right", padx=6)
+        ttk.Button(bar, text="打开日志文件夹", width=14,
+                   command=self._open_log_dir).pack(side="right")
+
+        wrap = ttk.Frame(f)
+        wrap.pack(fill="both", expand=True)
+        self.log = tk.Text(wrap, font=MONO, wrap="none",
                            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#d4d4d4")
-        vsb = ttk.Scrollbar(logbox, orient="vertical", command=self.log.yview)
+        vsb = ttk.Scrollbar(wrap, orient="vertical", command=self.log.yview)
         # bot 的日志里有很长的 URL 和商品原文；不给横向滚动条就永远看不到行尾
-        hsb = ttk.Scrollbar(logbox, orient="horizontal", command=self.log.xview)
+        hsb = ttk.Scrollbar(wrap, orient="horizontal", command=self.log.xview)
         self.log.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set, state="disabled")
         hsb.pack(side="bottom", fill="x")
         vsb.pack(side="right", fill="y")
         self.log.pack(side="left", fill="both", expand=True)
         for tag, col in (("err", "#f48771"), ("warn", "#dcdcaa"), ("push", "#6a9955")):
             self.log.tag_configure(tag, foreground=col)
+
+    def _clear_log(self) -> None:
+        """只清屏幕上的显示，不动 logs/bot.log 那个文件。"""
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
+
+    def _open_log_dir(self) -> None:
+        import subprocess
+        log_dir = process.LOG_FILE.parent
+        try:
+            log_dir.mkdir(exist_ok=True)
+            subprocess.Popen(["explorer", str(log_dir)])
+        except OSError as e:
+            messagebox.showerror("打不开", f"{type(e).__name__}: {e}\n\n路径：{log_dir}")
 
     # ── NapCat ──
     def _build_napcat_card(self, parent: ttk.Widget) -> None:
