@@ -57,7 +57,8 @@ def _save(data: dict) -> None:
 
 
 def mark_feedback(ts: int, source: str, action: str,
-                  verdict: str, reason: str = "", title: str = "") -> dict:
+                  verdict: str, reason: str = "", title: str = "",
+                  event_reason: str = "") -> dict:
     """记录一条判定反馈。verdict: "correct" | "wrong"。
 
     reason 仅在 wrong 时填写。推送有误："expensive"（到手价估错）、
@@ -65,6 +66,16 @@ def mark_feedback(ts: int, source: str, action: str,
     拦截有误："should_push"（是真羊毛不该拦）、"wrong_reason"（拦对了原因不对）、"other"。
     这些 key 是 judge_feedback.json 的存量数据，改名会让历史反馈对不上，只能改前端文案。
     返回更新后的该条反馈记录。
+
+    ☠ **`title` / `event_reason` 必须存进记录里，不能只拿去算 key。**
+
+    这里以前只存 ts/verdict/reason，商品原文和「当初为什么被拦」都得回 events.jsonl
+    里 join 才能还原。而 events.jsonl 到 2MB 就轮转、砍掉旧的一半——于是反馈只要放上
+    十来天，证据就没了。2026-07-14 复盘时，102 条「拦错了（should_push）」一条都对不
+    上：只知道「有 102 条被拦错」，不知道它们是什么、为什么被拦，**完全无法用来调优**。
+    那正是这些反馈唯一的价值所在。
+
+    所以每条反馈自带证据：`title`（商品原文）+ `event_reason`（当初的拦截原因）。
     """
     data = _load()
     key = _event_key(ts, source, action, title)
@@ -73,6 +84,11 @@ def mark_feedback(ts: int, source: str, action: str,
         "reason": reason,
         "ts": int(time.time()),
     }
+    # 老记录没有这两个字段，读的时候要容忍缺失
+    if title:
+        entry["title"] = title
+    if event_reason:
+        entry["event_reason"] = event_reason
     data[key] = entry
     _save(data)
     return entry
@@ -90,7 +106,8 @@ _PUSH_FB_REASON_DEFAULT = "bad"    # 「其他原因」：只记票，不硬拦
 
 
 def apply_judgement(ts: int, source: str, action: str,
-                    verdict: str, reason: str = "", title: str = "") -> dict:
+                    verdict: str, reason: str = "", title: str = "",
+                    event_reason: str = "") -> dict:
     """记下一条「判定准不准」的反馈，并把它翻译成会真正影响推送的 verdict。
 
     这层映射是**唯一的**，UI 不许自己写一份：早先把 `wrong_match` 也记成 `not_deal`，
@@ -100,7 +117,7 @@ def apply_judgement(ts: int, source: str, action: str,
     而 `feedback.json` 的键算的是判定文本的 md5——不先剥干净就永远对不上，
     标「推错了」撤不掉当初那一票。
     """
-    entry = mark_feedback(ts, source, action, verdict, reason, title)
+    entry = mark_feedback(ts, source, action, verdict, reason, title, event_reason)
 
     clean = strip_footer(strip_cq(title or "", image_placeholder="")).strip()
     if not clean:

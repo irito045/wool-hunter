@@ -358,8 +358,12 @@ class JudgeDialog(tk.Toplevel):
             return
         from services.judge_feedback import apply_judgement
         r = self._row
+        # 把「当初为什么被拦」（events.jsonl 那一行的 reason）一起存进反馈里。
+        # 不存的话，反馈只能靠回 events.jsonl join 才能还原，而那个文件会轮转——
+        # 2026-07-14 复盘时 102 条「拦错了」的证据就是这么全丢的。
         apply_judgement(int(r.get("ts", 0)), r.get("source", ""), r.get("action", ""),
-                        v, self._reason.get() if v == "wrong" else "", r.get("title", ""))
+                        v, self._reason.get() if v == "wrong" else "", r.get("title", ""),
+                        event_reason=r.get("reason", ""))
         self.destroy()
         self._on_done()
 

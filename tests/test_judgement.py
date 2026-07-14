@@ -104,3 +104,54 @@ class TestRuntimeStateIsHotReloaded(IsolatedDataTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFeedbackCarriesItsOwnEvidence(IsolatedDataTest):
+    """反馈必须自带证据（商品原文 + 当初的拦截原因）。
+
+    ☠ 这个坑咬过两次。judge_feedback 以前只存 ts/verdict/reason，要还原「这条是什么、
+    为什么被拦」就得拿 key 回 events.jsonl 里 join。而 events.jsonl 到 2MB 就轮转、
+    砍掉旧的一半——反馈放上十来天，证据就没了。
+
+    2026-07-14 复盘：102 条「拦错了（should_push）」一条都对不上，只知道「有 102 条
+    被拦错」，不知道它们是什么、为什么被拦。**这些反馈唯一的价值就是拿来调优，而它们
+    彻底没法用了。**（更早的一次是 137 条。）
+
+    所以：反馈落盘时必须把 title 和 event_reason 一起存进去。
+    """
+
+    def setUp(self):
+        super().setUp()
+        import services.judge_feedback as jf
+        self.jf = jf
+
+    def test_title_is_stored_not_just_hashed_into_the_key(self):
+        e = self.jf.apply_judgement(1, "qq", "filter", "wrong", "should_push",
+                                    "蒙牛纯甄酸奶 12盒 券后29.9", event_reason="非羊毛")
+        self.assertEqual(e.get("title"), "蒙牛纯甄酸奶 12盒 券后29.9",
+                         "商品原文没存下来——events.jsonl 一轮转，这条反馈就废了")
+
+    def test_event_reason_is_stored(self):
+        e = self.jf.apply_judgement(1, "qq", "filter", "wrong", "should_push",
+                                    "某商品", event_reason="外卖饭点券")
+        self.assertEqual(e.get("event_reason"), "外卖饭点券",
+                         "没存「当初为什么被拦」，就无从判断是哪条规则拦错了")
+
+    def test_stored_evidence_survives_a_reload(self):
+        """存进去还要读得回来——落盘和读取是两回事。"""
+        self.jf.apply_judgement(7, "weibo", "filter", "wrong", "should_push",
+                                "青岛啤酒 24听 券后69.9", event_reason="垃圾帖")
+        got = self.jf.get_all_feedback()
+        hit = [v for v in got.values() if v.get("title") == "青岛啤酒 24听 券后69.9"]
+        self.assertEqual(len(hit), 1)
+        self.assertEqual(hit[0].get("event_reason"), "垃圾帖")
+
+    def test_old_records_without_evidence_still_load(self):
+        """存量的 388 条老记录没有这两个字段，读的时候不能炸。"""
+        import json
+        self.jf.FB_FILE.write_text(
+            json.dumps({"1_qq_filter": {"verdict": "wrong", "reason": "should_push", "ts": 1}}),
+            encoding="utf-8")
+        got = self.jf.get_all_feedback()
+        self.assertEqual(len(got), 1)
+        self.assertIsNone(got["1_qq_filter"].get("title"))
