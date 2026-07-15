@@ -68,6 +68,13 @@ async def _image_bytes(bot: Bot, data: dict) -> Optional[bytes]:
     file_id = data.get("file") or ""
     url = data.get("url") or ""
 
+    # 微博源的图片段：file= 直接就是 https 直链（sinaimg 无防盗链，实测裸下 200）。
+    # NapCat 的 get_image 只认它自己图库里的 file id，拿一条 URL 去问它是白跑一趟，
+    # 每条微博推送都要多等一次注定失败的 RPC。当 url 走 httpx 直下即可。
+    if file_id.startswith(("http://", "https://")):
+        url = url or file_id
+        file_id = ""
+
     # 1) get_image：NapCat 从持久图库(nt_data\Pic\Ori)取原图，返回本地路径或 base64
     if file_id:
         try:

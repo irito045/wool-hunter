@@ -11,11 +11,11 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 from nonebot import get_driver
-from nonebot.adapters.onebot.v11 import Bot
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 import logging
 logger = logging.getLogger("weibo")
 
@@ -169,6 +169,7 @@ async def fetch_weibo_entries(uid: str) -> tuple[list[dict], bool, str]:
             entries.append({
                 "id": post_id,
                 "content": full_content,
+                "pic": _main_pic(mblog),
             })
 
         logger.debug(f"微博 uid={uid} 拉取到 {len(entries)} 条")
@@ -180,6 +181,82 @@ async def fetch_weibo_entries(uid: str) -> tuple[list[dict], bool, str]:
     except Exception as e:
         logger.error(f"微博 API 异常 uid={uid}: {e}")
         return [], False, "network"
+
+
+def _build_labeled(content: str, pic: str = "") -> Union[str, Message]:
+    """把「判定用的全文」变成「实际发出去的内容」（纯展示层，不影响任何判定）。
+
+    版式：正文 → [主图] → ───── → 📎微博原文。
+    正文超 800 字只截**展示副本**（判定早已用全文做完），原文链留在末尾，想看全文点它。
+    原文链本身就说明了来源，所以不再多加一行「📌 来自微博」（用户嫌啰嗦）。
+
+    ☠ **图片段必须排在正文后面。** `forwarder` 把发出去的内容原样记进 `events.jsonl`
+    的 `title`；图放最前面的话，总览列表里每条微博都以一长串
+    `[CQ:image,file=https://…]` 开头，商品名直接被挤出那 120 字的可视区。
+
+    ☠ **而且图片段前后一个多余的换行都不能加。**反馈闭环是靠**文本的裸 md5**
+    对上的（`feedback._text_hash`，不做空白归一化）：用户在控制台标一条「这是真羊毛，
+    不该拦」，走的是 `strip_footer(strip_cq(title, ""))`——图片码被剥成空串，
+    我要是写成 `body + "\\n" + 图`，剥完就剩下 `body\\n\\n📎…`，比判定文本
+    `body\\n📎…` 多一个换行，md5 对不上，**那条反馈从此静默失效**。
+    所以 `footer` 自己就以 `\\n` 开头，图直接贴在 `body` 后面，不额外加换行。
+    这条不变量由 `tests/test_weibo_pic.py::test_sent_message_round_trips_to_judging_text` 守着。
+
+    这里手工构造 image 段而不用 `MessageSegment.image()`：后者还会塞进
+    cache/proxy/timeout 三个键，跟着 `str(Message)` 一起写进流水标题——
+    `events.jsonl` 到 2MB 就轮转丢历史，标题能短一点是一点。
+
+    `file=` 给的是 https 直链（sinaimg 无防盗链，实测裸下 200）：
+    `forwarder._hydrate_images` 会下成 base64 再发；下不动就退回让 NapCat 自己取；
+    再不行降级成「［图片］」——反正**文字不会丢**。
+    """
+    parts = content.split("\n📎 微博原文：", 1)
+    body = (parts[0] if len(parts[0]) <= 800
+            else parts[0][:800].rstrip() + "…（内容较长，详情见原文）")
+    footer = ("\n─────\n📎 微博原文：" + parts[1]) if len(parts) > 1 else ""
+
+    if not pic:
+        return body + footer
+
+    msg = Message()
+    msg += MessageSegment.text(body)
+    msg += MessageSegment("image", {"file": pic})
+    if footer:
+        msg += MessageSegment.text(footer)
+    return msg
+
+
+def _main_pic(mblog: dict) -> str:
+    """取这条微博的**主图**直链（大图优先），没有图就返回 ""。
+
+    只要第一张。羊毛博主常常一条帖甩 4~9 张（多商品 / 多角度 / 多张券截图），
+    全转过去就是在群里刷屏——一张主图足够让人一眼看出是什么东西。
+
+    `pics[i]` 的 `url` 是 orj360 缩略图（360px，券码和价格根本看不清），
+    `large.url` 是 mw2000 —— 羊毛帖的图多半是**截图**，字糊了这张图就白转了，所以取大图。
+
+    转发的微博（`retweeted_status`）自己没有 `pics`，图挂在被转的原帖上；
+    这类帖 `mblog["text"]` 只有博主那句短评（如「肯德基/麦当劳」），
+    正文全在原帖里——对它们来说，那张图恰恰是唯一有信息量的东西。
+    """
+    for m in (mblog, mblog.get("retweeted_status") or {}):
+        if not isinstance(m, dict):
+            continue
+        pics = m.get("pics")
+        if not isinstance(pics, list) or not pics:
+            continue
+        first = pics[0]
+        if not isinstance(first, dict):
+            continue
+        large = first.get("large")
+        url = ""
+        if isinstance(large, dict):
+            url = str(large.get("url") or "").strip()
+        if not url:
+            url = str(first.get("url") or "").strip()
+        if url.startswith(("http://", "https://")):
+            return url
+    return ""
 
 
 def _clean_weibo_html(html: str) -> str:
@@ -305,19 +382,11 @@ async def _check_weibo():
 
             new_count += 1
 
-            # 展示层截断（判定已经用全文 content 做完）：正文超 800 字只截展示副本，
-            # 原文链保留在末尾，想看全文点原文。
-            # 版式：正文 → ───── → 📎微博原文。原文链本身已经说明来源，
-            # 不再多加一行「📌 来自微博」（用户嫌啰嗦）。
-            _parts = content.split("\n📎 微博原文：", 1)
-            _disp_body = (_parts[0] if len(_parts[0]) <= 800
-                          else _parts[0][:800].rstrip() + "…（内容较长，详情见原文）")
-            labeled_content = _disp_body + (
-                "\n─────\n📎 微博原文：" + _parts[1] if len(_parts) > 1 else "")
-
             # 跨源去重 + 质量把关(是不是真羊毛) + 三类订阅(低价/关键词/品类)分发，
-            # 统一走 dispatch_deal（与 QQ 源同一套逻辑）
-            await dispatch_deal(bot, weibo_subs, content, labeled_content,
+            # 统一走 dispatch_deal（与 QQ 源同一套逻辑）。
+            # 判定一律用纯文本 content，图只进展示层——别让一张图改变「是不是羊毛」的结论。
+            await dispatch_deal(bot, weibo_subs, content,
+                                _build_labeled(content, entry.get("pic", "")),
                                 source="weibo", allowed_groups=FORWARD_GROUP_IDS, tag="[微博]")
 
         if new_count:

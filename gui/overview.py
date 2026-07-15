@@ -231,6 +231,7 @@ class OverviewTab(ttk.Frame):
 
     def _render(self) -> None:
         from services.judge_feedback import _event_key
+        from services.text_normalizer import strip_cq
         self.tree.delete(*self.tree.get_children())
         self._visible: list[dict] = []
         # read_recent() 已经是「最新在前」，所以「最新在上」就是原序，别再 reversed() 一次。
@@ -243,7 +244,11 @@ class OverviewTab(ttk.Frame):
                 continue
             ts = datetime.datetime.fromtimestamp(r.get("ts", 0))
             act = "🟢 推送" if r.get("action") == "push" else f"🔴 {r.get('reason') or '拦截'}"
-            title = (r.get("title") or "").replace("\n", " / ")[:120]
+            # 展示副本才剥 CQ 码：流水里的 title 原样保留（补发/反馈都要用它算键）。
+            # 不剥的话，带图的那条会以一长串 [CQ:image,file=…] 开头/夹在中间，
+            # 120 字的可视区全被它吃掉，商品名一个字都看不见。
+            title = strip_cq(r.get("title") or "", image_placeholder="［图］")
+            title = title.replace("\n", " / ")[:120]
             tags = [r.get("action", "")]
             if _k in self._judged:
                 tags.append("judged")
@@ -310,8 +315,11 @@ class JudgeDialog(tk.Toplevel):
         body = ttk.Frame(self, padding=12)
         body.pack(fill="both", expand=True)
 
+        # 同样只剥展示副本：真正传给 apply_judgement 的仍是 self._row["title"] 原文，
+        # 否则反馈算出来的 event_key 会和流水里的对不上，用户标了等于没标。
+        from services.text_normalizer import strip_cq
         txt = tk.Text(body, height=6, wrap="word", font=FONT_S)
-        txt.insert("1.0", (row.get("title") or "")[:600])
+        txt.insert("1.0", strip_cq(row.get("title") or "", image_placeholder="［图片］")[:600])
         txt.configure(state="disabled")
         txt.pack(fill="x", pady=(0, 10))
 
