@@ -29,7 +29,14 @@ class _FakePrivate:
 
 class TestGroupCmdGate(unittest.TestCase):
     def setUp(self):
-        ns = load_plugin_funcs("wool_hunter", ["_group_cmd_ok"])
+        # ☠ MessageEvent / GroupMessageEvent 必须在**抽取时**就注入 extra_globals：
+        # wool_hunter.py 没有 `from __future__ import annotations`，所以 Python ≤3.13 会在
+        # 函数**定义时**就对注解 `event: MessageEvent` 求值——抽取环境里没这个名字就 NameError，
+        # 整个用例 setUp 崩。本地 3.14 因 PEP 649 惰性求值不报错，CI 的 3.10/3.13 会挂。
+        ns = load_plugin_funcs(
+            "wool_hunter", ["_group_cmd_ok"],
+            {"MessageEvent": object, "GroupMessageEvent": _FakeGroup},
+        )
         # 函数的 __globals__ 就是这个 ns，改 ns 即改它运行时读到的名字。
         # 模块级 exec 会把 _COMMAND_ALLOWED_GROUPS 算成空集（getenv 为空），这里覆盖掉。
         ns["GroupMessageEvent"] = _FakeGroup
