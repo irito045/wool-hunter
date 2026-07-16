@@ -118,6 +118,35 @@ def _is_admin_private(uid: int, src_group: int) -> bool:
     return _is_admin(uid) and src_group == 0
 
 
+# 群发（/w broadcast）的待确认暂存：admin uid → (消息, 预览时间戳)。
+# 两步确认防手滑——「发给所有人」按错一次代价太大。超时作废。
+_pending_broadcast: dict[int, tuple[str, float]] = {}
+_BROADCAST_TTL = 300      # 预览后 5 分钟内不确认就作废，避免发出一条早忘了的旧消息
+
+
+def _broadcast_targets(subs: dict) -> tuple[set[int], set[int]]:
+    """所有订阅者去重后的 (私聊用户集合, 群集合)。
+
+    群订阅只有在 FORWARD_GROUP_IDS 白名单里才算——和推送同一条边界，
+    绝不往一个没被授权的群发东西。
+    这里**不看 enabled**：群发多半是「维护通知」这类要触达全部用户的公告，
+    某个人临时停了一条关键词订阅，不代表他退出了、不该收到通知。
+    """
+    users: set[int] = set()
+    groups: set[int] = set()
+    allowed = set(FORWARD_GROUP_IDS)
+    for lst in ("lowprice_subs", "keyword_subs", "category_subs"):
+        for s in subs.get(lst, []):
+            gid = int(s.get("group_id", 0) or 0)
+            owner = int(s.get("owner", 0) or 0)
+            if gid:
+                if gid in allowed:
+                    groups.add(gid)
+            elif owner:
+                users.add(owner)
+    return users, groups
+
+
 def _group_cmd_ok(event: MessageEvent) -> bool:
     """命令能不能在这里响应。私聊永远放行；用户群里要求「被艾特」。
 
@@ -354,6 +383,7 @@ HELP_TEXT_ADMIN = (
     "  /w resume                 恢复推送\n"
     "  /w log [行数]             查看最近日志（默认30行）\n"
     "  /w reload                 重启 bot（改配置后生效）\n"
+    "  /w broadcast <消息>       群发给所有订阅者（先预览，再 go 确认）\n"
 )
 
 
@@ -883,8 +913,70 @@ async def handle_wool_cmd(bot: Bot, event: MessageEvent, args: Message = Command
             os._exit(0)  # 由控制台的看门狗（gui/process.py:BotRunner）拉起新进程
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
+    # ── broadcast / 群发（管理员，仅私聊）：给所有订阅者群发一条通知 ──
+    # 两步：先 /w broadcast <消息> 看预览（发给几人几群 + 内容长啥样），
+    # 再 /w broadcast go 才真发。「一发全体」按错代价太大，必须挡一道。
+    elif action in ("broadcast", "群发"):
+        if not _is_admin_private(uid, src_group):
+            return
+        await _handle_broadcast(bot, uid, rest.strip())
+
     else:
         await wool_cmd.finish(f"❌ 未知操作: {action}\n发 /w 查看指令")
+
+
+async def _handle_broadcast(bot: Bot, uid: int, rest: str) -> None:
+    """管理员群发：预览 → 确认两步。
+
+    rest 为空 → 用法；'go/confirm/确认' → 确认并真正发送；其它 → 当作消息内容存起来预览。
+    直接用 bot.send_* 逐个发，**不走 forward_message**：群发不是好价推送，不该写进
+    events.jsonl 污染统计，也不该被「暂停推送」挡住（维护通知恰恰要在暂停时也发得出去）。
+    """
+    if rest.lower() in ("go", "confirm", "确认", "发送", "发"):
+        pending = _pending_broadcast.pop(uid, None)
+        if not pending or time.time() - pending[1] > _BROADCAST_TTL:
+            await wool_cmd.finish("没有待发送的群发（可能已超过 5 分钟作废）。先发 /w broadcast <消息> 预览。")
+            return
+        msg = pending[0]
+        users, groups = _broadcast_targets(_load_subscribers())
+        body = f"📢 通知\n─────\n{msg}"
+        ok_u = ok_g = 0
+        for u in users:
+            try:
+                await bot.send_private_msg(user_id=u, message=body)
+                ok_u += 1
+            except Exception as e:
+                logger.warning(f"[群发] 发给用户 {u} 失败: {e}")
+            await asyncio.sleep(0.5)      # 放慢节奏，别触发 QQ 风控
+        for g in groups:
+            try:
+                await bot.send_group_msg(group_id=g, message=body)
+                ok_g += 1
+            except Exception as e:
+                logger.warning(f"[群发] 发给群 {g} 失败: {e}")
+            await asyncio.sleep(0.5)
+        logger.info(f"[群发] 管理员 {uid} 完成：私聊 {ok_u}/{len(users)}，群 {ok_g}/{len(groups)}")
+        await wool_cmd.finish(f"✅ 群发完成：私聊 {ok_u}/{len(users)} 人，群 {ok_g}/{len(groups)} 个。")
+        return
+
+    if not rest:
+        await wool_cmd.finish(
+            "用法：/w broadcast <要群发的消息>\n"
+            "会先给你看「发给几人几群 + 内容预览」，确认无误再发 /w broadcast go。")
+        return
+
+    users, groups = _broadcast_targets(_load_subscribers())
+    if not users and not groups:
+        await wool_cmd.finish("现在没有任何订阅者，无处可发。")
+        return
+    _pending_broadcast[uid] = (rest, time.time())
+    await wool_cmd.finish(
+        f"📋 即将群发给：私聊 {len(users)} 人 ＋ 群 {len(groups)} 个\n"
+        "─────────\n"
+        f"📢 通知\n─────\n{rest}\n"
+        "─────────\n"
+        "确认发送 → /w broadcast go（5 分钟内有效）\n"
+        "想改内容 → 重新发 /w broadcast <新消息>")
 
 
 # ============================================================
