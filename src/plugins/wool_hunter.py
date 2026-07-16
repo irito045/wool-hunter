@@ -937,9 +937,9 @@ async def _handle_broadcast(bot: Bot, uid: int, rest: str) -> None:
         if not pending or time.time() - pending[1] > _BROADCAST_TTL:
             await wool_cmd.finish("没有待发送的群发（可能已超过 5 分钟作废）。先发 /w broadcast <消息> 预览。")
             return
-        msg = pending[0]
+        # 原样发送：管理员发什么就发什么，不加任何抬头/前缀（用户要求）
+        body = pending[0]
         users, groups = _broadcast_targets(_load_subscribers())
-        body = f"📢 通知\n─────\n{msg}"
         ok_u = ok_g = 0
         for u in users:
             try:
@@ -972,8 +972,8 @@ async def _handle_broadcast(bot: Bot, uid: int, rest: str) -> None:
     _pending_broadcast[uid] = (rest, time.time())
     await wool_cmd.finish(
         f"📋 即将群发给：私聊 {len(users)} 人 ＋ 群 {len(groups)} 个\n"
-        "─────────\n"
-        f"📢 通知\n─────\n{rest}\n"
+        "──── 原样发出如下 ────\n"
+        f"{rest}\n"
         "─────────\n"
         "确认发送 → /w broadcast go（5 分钟内有效）\n"
         "想改内容 → 重新发 /w broadcast <新消息>")
