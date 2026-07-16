@@ -118,6 +118,26 @@ def _is_admin_private(uid: int, src_group: int) -> bool:
     return _is_admin(uid) and src_group == 0
 
 
+def _group_cmd_ok(event: MessageEvent) -> bool:
+    """命令能不能在这里响应。私聊永远放行；用户群里要求「被艾特」。
+
+    隐私考虑（用户 2026-07-15 要求）：用户群里 bot 只回应**点名找它**的消息，
+    不对群友日常闲聊做任何反应——哪怕消息里恰好带了 /w 这样的前缀。
+    这样 bot 在群里的存在感被压到最低：没 @ 它，它就当没看见。
+
+    `is_tome()` 在两种情况为真：消息 @ 了 bot；或消息是对「bot 自己发的那条」的
+    引用回复（OneBot/NapCat 会把「回复 bot」也标成 to_me）。所以引用回复报「贵了」
+    这类反馈天然满足，不用额外手动 @。
+
+    ⚠ 只管**用户群的命令**。羊毛群（WOOL_GROUP_IDS）靠 wool_listener 读全部消息找
+    好价，那条链路和这里无关、绝不能加艾特门；同一个群若既是羊毛群又是用户群，
+    它的好价照抓，只是 /w /help /查 要 @ 才应答。
+    """
+    if not isinstance(event, GroupMessageEvent):
+        return True
+    return str(event.group_id) in _COMMAND_ALLOWED_GROUPS and event.is_tome()
+
+
 async def _admin_notify(bot: Bot, text: str) -> None:
     """给所有管理员 QQ 发通知（fire-and-forget，失败静默）。"""
     for admin_id in ADMIN_IDS:
@@ -352,7 +372,7 @@ help_cmd = on_command("help", priority=5, block=True)
 
 @help_cmd.handle()
 async def handle_help(event: MessageEvent):
-    if isinstance(event, GroupMessageEvent) and str(event.group_id) not in _COMMAND_ALLOWED_GROUPS:
+    if not _group_cmd_ok(event):   # 用户群里没 @ bot 就不理
         return
     await help_cmd.finish(_help_for(event.user_id, not isinstance(event, GroupMessageEvent)))
 
@@ -404,7 +424,7 @@ def _ago(ts: int) -> str:
 
 @query_cmd.handle()
 async def handle_query(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
-    if isinstance(event, GroupMessageEvent) and str(event.group_id) not in _COMMAND_ALLOWED_GROUPS:
+    if not _group_cmd_ok(event):   # 用户群里没 @ bot 就不理
         return
     kw = args.extract_plain_text().strip()
     if not kw:
@@ -550,7 +570,7 @@ async def _handle_cat_cmd(bot: Bot, subs: dict, uid: int, src_group: int, rest: 
 
 @wool_cmd.handle()
 async def handle_wool_cmd(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
-    if isinstance(event, GroupMessageEvent) and str(event.group_id) not in _COMMAND_ALLOWED_GROUPS:
+    if not _group_cmd_ok(event):   # 用户群里没 @ bot 就不理
         return
     arg_text = args.extract_plain_text().strip()
     uid = event.user_id
