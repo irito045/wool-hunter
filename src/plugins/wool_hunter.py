@@ -383,7 +383,7 @@ HELP_TEXT_ADMIN = (
     "  /w resume                 恢复推送\n"
     "  /w log [行数]             查看最近日志（默认30行）\n"
     "  /w reload                 重启 bot（改配置后生效）\n"
-    "  /w broadcast <消息>       群发给所有订阅者（先预览，再 go 确认）\n"
+    "  /w broadcast <消息>       群发给所有订阅者（预览后 /w go 确认）\n"
 )
 
 
@@ -921,6 +921,11 @@ async def handle_wool_cmd(bot: Bot, event: MessageEvent, args: Message = Command
             return
         await _handle_broadcast(bot, uid, rest.strip())
 
+    # 确认群发的简写：预览完直接 /w go 就发（省得再敲一长串 /w broadcast go）。
+    # 只有当自己确有一条待确认的群发时才认这个命令，否则当未知操作处理。
+    elif action in ("go", "确认") and _is_admin_private(uid, src_group) and uid in _pending_broadcast:
+        await _handle_broadcast(bot, uid, "go")
+
     else:
         await wool_cmd.finish(f"❌ 未知操作: {action}\n发 /w 查看指令")
 
@@ -975,7 +980,7 @@ async def _handle_broadcast(bot: Bot, uid: int, rest: str) -> None:
         "──── 原样发出如下 ────\n"
         f"{rest}\n"
         "─────────\n"
-        "确认发送 → /w broadcast go（5 分钟内有效）\n"
+        "确认发送 → 直接回 /w go（5 分钟内有效）\n"
         "想改内容 → 重新发 /w broadcast <新消息>")
 
 
