@@ -11,6 +11,10 @@ deepseek_checker.py — AI 辅助判定（2026-07-08 重构后只保留三处，
   AI_BASE_URL       接口地址，默认 https://api.deepseek.com
   AI_MODEL          模型名，默认 deepseek-chat
 不填后两个 = 走 DeepSeek，和以前完全一致（老部署无需改动）。
+
+推理模型（deepseek-v4-flash / deepseek-v4-pro 等）也直接支持：它们答题前的思考同样
+计入 max_tokens，这部分开销由 _REASONING_RESERVE 统一预留，各调用点只需按「答案本身
+要几个 token」传 max_tokens。
 """
 
 import asyncio
@@ -36,6 +40,16 @@ _lock = asyncio.Lock()
 _last_call: float = 0.0
 _MIN_INTERVAL = 1.0  # 两次 AI 请求之间最少间隔（秒）
 
+# 推理模型（deepseek-v4-flash/pro、o系列等）回答前先「思考」，思考过程同样计入
+# max_tokens。各调用点传的 max_tokens 只描述「答案本身」要几个 token（判定类就
+# 一个「是」字），思考的开销由这里统一预留。
+#
+# 踩过的坑：2026-07-19 把 AI_MODEL 从 deepseek-chat 换成 deepseek-v4-flash 后，
+# max_tokens=10 被思考过程吃光，content 返回空串，四处 AI 功能（真羊毛判定/语义
+# 匹配/品类归类/屏蔽词提取）全部静默失效一整天。
+# 对非推理模型无副作用——max_tokens 只是上限，模型输出完就 stop，不会多花钱。
+_REASONING_RESERVE = 512
+
 
 def ai_endpoint(base_url: str = "") -> str:
     """把 base_url 拼成完整的 /chat/completions 地址。
@@ -60,7 +74,9 @@ async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str |
         if gap > 0:
             await asyncio.sleep(gap)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(8.0), **NO_PROXY) as client:
+            # 推理模型要先思考再作答，比 chat 类慢不少，超时给够。
+            # 超时返回 None，各调用点都有安全降级（判定放行/回退字面匹配/返回空）。
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0), **NO_PROXY) as client:
                 resp = await client.post(
                     ai_endpoint(),
                     headers={
@@ -73,13 +89,23 @@ async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str |
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": text[:800]},
                         ],
-                        "max_tokens": max_tokens,
+                        "max_tokens": max_tokens + _REASONING_RESERVE,
                         "temperature": 0,
                         "stream": False,
                     },
                 )
                 resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"].strip()
+                choice = resp.json()["choices"][0]
+                answer = (choice["message"].get("content") or "").strip()
+                # 预留还是不够（模型思考特别长）时，宁可当调用失败走各处的安全降级，
+                # 也不能把截断出来的空串/半截话当成模型的真实回答——那会静默误判。
+                if not answer:
+                    logger.warning(
+                        f"[AI] 模型 {AI_MODEL} 未返回有效回答"
+                        f"（finish_reason={choice.get('finish_reason')}），按调用失败降级处理"
+                    )
+                    return None
+                return answer
         except Exception as e:
             logger.warning(f"[AI] 调用失败: {e}")
             return None

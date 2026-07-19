@@ -58,7 +58,11 @@ BASIC: list[Field] = [
 # base_url 的写法各家不一（DeepSeek 无 /v1，其余带 /v1），拼接规则见
 # deepseek_checker.ai_endpoint()。
 AI_PROVIDERS: list[tuple[str, str, str, str]] = [
-    ("DeepSeek", "https://api.deepseek.com", "deepseek-chat",
+    # v4-flash 是 DeepSeek 当前的主力小模型（另有 deepseek-v4-pro，改模型名即可切）。
+    # 它是推理模型，回答前先思考——token 预留见 deepseek_checker._REASONING_RESERVE。
+    # 注意 deepseek_checker.AI_MODEL 的兜底默认值仍是老的 deepseek-chat：那是留给
+    # 没填过模型名的老 .env 的向后兼容承诺，别跟这里的预设混为一谈。
+    ("DeepSeek", "https://api.deepseek.com", "deepseek-v4-flash",
      "https://platform.deepseek.com/"),
     ("Kimi 月之暗面", "https://api.moonshot.cn/v1", "moonshot-v1-8k",
      "https://platform.moonshot.cn/"),
