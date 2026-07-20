@@ -121,5 +121,41 @@ class TestNoiseCategories(IsolatedDataTest):
         self.assertFalse(got["打车券"])
 
 
+class TestFreeGoodsSignal(IsolatedDataTest):
+    """品牌免费送实物（用户 2026-07-19 要收这一类，门槛不论）。
+
+    这些帖几乎必带小程序链接或「打卡」字样，会被 _n_checkin 拦死，所以 matcher 里
+    它排在 noise_verdict **之前**。真实误杀样本：小米之家免费领矿泉水、沃尔玛免费领
+    节气日历、优衣库免费送衬衫，连续多天一条没推出来。
+    """
+
+    def setUp(self):
+        super().setUp()
+        from services.price_checker import has_free_goods_signal
+        self.sig = has_free_goods_signal
+
+    def test_martian_variant_is_covered(self):
+        """「兔费」是这个群避审核的写法，出现频率比「免费」还高——漏了它整条规则白写。"""
+        self.assertTrue(self.sig("【小米之家兔费领80w份矿泉水】\n进店就能领"))
+        self.assertTrue(self.sig("【优衣库兔费送1k份衬衫】"))
+        self.assertTrue(self.sig("【苏果超市免费领帆布袋】"))
+
+    def test_task_threshold_still_counts(self):
+        """要打卡/发笔记/消费才能领的，照样算——用户明确说了门槛不论。"""
+        self.assertTrue(self.sig("【沃尔玛兔费领24节气日历】\n完成打卡并发布红薯笔记"))
+        self.assertTrue(self.sig("【OPPO兔费领小夜灯/小挂件】\n按要求打咔发布笔记"))
+
+    def test_farming_without_bracket_format_not_matched(self):
+        """只认方括号强格式：裸词匹配会把外卖券/津贴/流量包那 47 条全放进来。"""
+        self.assertFalse(self.sig("7️⃣月移动 34个兔费流量包❗"))
+        self.assertFalse(self.sig("⚠️ 疯四大额券名额很快🈚 参与兔单 概率随机可0元拿下"))
+        self.assertFalse(self.sig("【芭芭农场兔单领水果/月卡等】"))   # 「兔单」不是「兔费」
+        self.assertFalse(self.sig("17点 超级加码 美团 38-19 6K张"))
+
+    def test_ordinary_deal_unaffected(self):
+        self.assertFalse(self.sig("维达 棉韧 抽纸，3元一大提❗"))
+        self.assertFalse(self.sig("特仑苏250mlx16盒才💰27一箱"))
+
+
 if __name__ == "__main__":
     unittest.main()

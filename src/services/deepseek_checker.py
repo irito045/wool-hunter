@@ -107,7 +107,11 @@ async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str |
                     return None
                 return answer
         except Exception as e:
-            logger.warning(f"[AI] 调用失败: {e}")
+            # 必须带类型名：超时类异常（ReadTimeout/ConnectTimeout）的 str(e) 是空字符串，
+            # 只记 {e} 会打出「[AI] 调用失败: 」这种查无可查的日志。2026-07-20 凌晨两次
+            # 失败就是这样，事后无法判断是超时、断网还是服务端拒绝。health.py 一直是对的。
+            detail = str(e).strip() or "无附加信息"
+            logger.warning(f"[AI] 调用失败: {type(e).__name__}: {detail}")
             return None
         finally:
             _last_call = time.monotonic()
@@ -136,6 +140,11 @@ def _build_genuine_deal_prompt() -> str:
         "玩游戏提现、下载app领券、摇一摇/搜口令领券、集卡、抽奖通知等"
         "（没有一个具体商品让你直接买）；\n"
         "3. 只有链接/口令/数字，没有任何具体商品名。\n"
+        "【免费送实物是例外，一律回答「是」】品牌/门店免费送或免费领一件**实物**"
+        "（如 到店领矿泉水、领帆布袋、领气球、领小夜灯、领冰淇淋、送衬衫），"
+        "**哪怕需要到店、打卡、发笔记、先消费**，也回答「是」——用户明确要收这一类。\n"
+        "但免费领的如果是**虚拟的东西**（红包、立减金、话费、流量包、优惠券、会员、"
+        "积分、金币、月卡、提现额度），那仍然按上面第 2 条回答「否」。\n"
         "只要是「具体商品 + 可购买的优惠信息」，哪怕只是普通价、甚至偏贵，都回答「是」"
         "（价格划不划算不在这里判断）。话费/水电燃气缴费、抽奖、试用装/小样也算，回答「是」。\n"
         "拿不准就回答「是」。只回答「是」或「否」，不要任何其他文字。"

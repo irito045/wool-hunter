@@ -26,6 +26,7 @@ from .price_checker import (
     extract_prices,
     find_trigger_word,
     has_bill_signal,
+    has_free_goods_signal,
     has_lottery_signal,
     has_trial_signal,
     noise_verdict,
@@ -63,20 +64,25 @@ async def passes_quality(text: str, source: str = "") -> bool:
         logger.info(f"[用户裁决] 标过「该推却被拦」，直接放行: {text[:40]}…")
         return True
 
-    blocked_by, noise_hits = noise_verdict(text)
-    if blocked_by:
-        # reason 仍记「外卖饭点券」这个老值：看板筛选和历史事件流水都按它对齐；
-        # 具体是哪一类进日志，方便排查「为什么这条被拦」。
-        logger.info(f"[噪音拦截] {blocked_by}: {text[:40]}…")
-        record(source, FILTER, "外卖饭点券", title=text)
-        return False
-    if noise_hits:
-        # 命中了噪音规则，但这些类别用户都在看板关掉了 → 他要的就是这类，放行。
-        # 不能往下走 DS：DS 会把它当 farming 判「否」，开关就白设了。
-        logger.info(f"[噪音放行] 用户已关闭拦截类别 {noise_hits}: {text[:40]}…")
-        return True
-    if has_lottery_signal(text) or has_bill_signal(text) or has_trial_signal(text):
-        return True
+    # ② 品牌免费送实物（【小米之家兔费领80w份矿泉水】）：绕开噪音拦截，直接交给 DS
+    # 判断「领的是实物还是红包/流量」。必须插在 noise_verdict 之前——这类帖几乎必带
+    # 小程序链接或「打卡」字样，走噪音规则会被 _n_checkin 拦死，而后面那几个放行信号
+    # 排在噪音之后，救不回来。用户要这一类，且门槛不论（到店/打卡/发笔记都照推）。
+    if not has_free_goods_signal(text):
+        blocked_by, noise_hits = noise_verdict(text)
+        if blocked_by:
+            # reason 仍记「外卖饭点券」这个老值：看板筛选和历史事件流水都按它对齐；
+            # 具体是哪一类进日志，方便排查「为什么这条被拦」。
+            logger.info(f"[噪音拦截] {blocked_by}: {text[:40]}…")
+            record(source, FILTER, "外卖饭点券", title=text)
+            return False
+        if noise_hits:
+            # 命中了噪音规则，但这些类别用户都在看板关掉了 → 他要的就是这类，放行。
+            # 不能往下走 DS：DS 会把它当 farming 判「否」，开关就白设了。
+            logger.info(f"[噪音放行] 用户已关闭拦截类别 {noise_hits}: {text[:40]}…")
+            return True
+        if has_lottery_signal(text) or has_bill_signal(text) or has_trial_signal(text):
+            return True
     if not has_product_substance(text):
         record(source, FILTER, "垃圾帖", title=text)
         return False
