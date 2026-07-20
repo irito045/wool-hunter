@@ -73,4 +73,20 @@ if app is not None:
                                 status_code=500)
         return JSONResponse({"ok": True, **got})
 
+    # HOST 不是回环地址时，这个「让我的 bot 往群里发消息」的接口就暴露到整个局域网了，
+    # 挡在前面的只剩一个 token。绑定是用户在控制台改的、改完不会有任何提示，所以这里
+    # 必须自己喊出来——否则一次手滑的 0.0.0.0 会一直安静地开着。
+    _LOOPBACK = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
+    try:
+        _host = str(nonebot.get_driver().config.host).strip().lower()
+    except Exception:
+        _host = ""
+    if _host and _host not in _LOOPBACK:
+        logger.warning(
+            f"⚠️ 安全提醒：HOST={_host} 不是本机回环地址，"
+            f"内部补发接口 /api/internal/resend 现在整个局域网都能访问"
+            f"（只剩 token 保护）。除非你确实需要远程访问，否则请在控制台「配置」页"
+            f"把 HOST 改回 127.0.0.1。"
+        )
+
     logger.info("🔌 内部接口已挂载：POST /api/internal/resend（仅本机 + token）")

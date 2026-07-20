@@ -53,11 +53,11 @@ def _api_token() -> str:
 def resend_via_bot(title: str, source: str) -> tuple[bool, str]:
     """让 bot 进程把这条消息补发出去。控制台自己发不了——它没有 NapCat 连接。"""
     import httpx
-    from gui import envfile
+    from gui import process
     token = _api_token()
     if not token:
         return False, "拿不到接口 token（bot 没启动过？）"
-    port = envfile.read_env().get("PORT", "8081") or "8081"
+    port = process.bot_port()   # 唯一事实来源：脱引号 + 校验数字 + 坏值回退
     try:
         r = httpx.post(f"http://127.0.0.1:{port}/api/internal/resend",
                        json={"title": title, "source": source},

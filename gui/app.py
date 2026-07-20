@@ -319,7 +319,9 @@ class Console(tk.Tk):
     def _napcat_prepare(self, inst, qq: str) -> bool:
         """停掉 NapCat 并确保反向 WS 配好。NapCat 跑着的时候改配置没用（要重启才读）。"""
         self.napcat.stop(inst)
-        port = envfile.read_env().get("PORT", "8081") or "8081"
+        # 端口只有 process.bot_port() 一处事实来源：它会脱引号、校验是数字、
+        # 坏值回退默认端口。自己 read_env 拿到的坏值会被原样写进 NapCat 配置。
+        port = str(process.bot_port())
         changed, msg = napcat.ensure_ws_client(inst, qq, port)
         self._log_line(f"[NapCat] {msg}", raw=True)
         return changed
@@ -428,7 +430,7 @@ class Console(tk.Tk):
             checks = health.run_all(env, self.napcat.state, uptime)
             inst, why = napcat.diagnose(env.get("NAPCAT_DIR", ""))
             nc_state = napcat.describe(inst, self.napcat.state,
-                                       env.get("PORT", "8081") or "8081", why, uptime)
+                                       str(process.bot_port()), why, uptime)
             self.after(0, lambda: (self._render_health(checks), self._render_napcat(nc_state)))
 
         threading.Thread(target=work, daemon=True).start()

@@ -20,6 +20,7 @@ import httpx
 
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 
+from .net import NO_PROXY
 from .runtime_state import is_paused
 from .event_log import record, PUSH
 
@@ -93,7 +94,9 @@ async def _image_bytes(bot: Bot, data: dict) -> Optional[bytes]:
     # 2) httpx 直接下载多媒体 url（收到时新鲜，转发就在几秒内，通常还有效）
     if url:
         try:
-            async with httpx.AsyncClient(timeout=8.0, trust_env=False) as c:
+            # 走 services/net.py 那份唯一配置，别在这里写死 trust_env=False：
+            # 两者当前行为一样，但只有前者会跟着 net.py 一起变（将来若要支持代理）。
+            async with httpx.AsyncClient(timeout=8.0, **NO_PROXY) as c:
                 r = await c.get(url)
                 r.raise_for_status()
                 return r.content

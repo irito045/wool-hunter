@@ -59,8 +59,9 @@ def check_napcat(env: dict[str, str], state: str = "", bot_uptime: float = 0.0) 
     有没有一条 ESTABLISHED 连接」，见 napcat.describe()。
     """
     from . import napcat as nc
+    from . import process          # 端口的唯一事实来源，别自己 read_env
     inst, why = nc.diagnose(env.get("NAPCAT_DIR", ""))
-    level, text = nc.describe(inst, state, env.get("PORT", "8081") or "8081", why, bot_uptime)
+    level, text = nc.describe(inst, state, str(process.bot_port()), why, bot_uptime)
     if level == OK or why == nc.NOT_ONEKEY:
         fix = ""            # 非 OneKey 版给不出「修复」按钮，别假装能修
     elif inst is None:

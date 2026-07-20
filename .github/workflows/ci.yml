@@ -42,6 +42,12 @@ jobs:
       - name: 确认 .gitignore 真的挡住了隐私文件
         # gitignore 不支持行尾注释，写错了会静默失效——曾经差点把 2MB 的
         # 真实群消息原文提交上去。这里让 git 自己回答，而不是靠肉眼看文件。
+        #
+        # ⚠ 备份文件名有两种，别只守一种：`subscriptions.py` 用
+        # `with_suffix(".bak")`（**替换**后缀 → subscribers.bak），而 `feedback.py`
+        # 用 `with_suffix(suffix + ".bak")`（**追加** → feedback.json.bak）。
+        # 这份清单一度只写了 subscribers.json.bak——一个根本不存在的文件，
+        # 真正落盘的 subscribers.bak 全靠 `src/data/*.bak*` 通配兜着。
         run: |
           set -e
           for f in src/data/events.jsonl \
@@ -53,7 +59,10 @@ jobs:
                    src/data/api_token.txt \
                    src/data/runtime.json \
                    src/data/console_prefs.json \
+                   src/data/subscribers.bak \
                    src/data/subscribers.json.bak \
+                   src/data/judge_feedback.bak \
+                   src/data/feedback.json.bak \
                    src/data/events.jsonl.bak.before-cleanup \
                    src/data/categories.json.tmp \
                    .env .env.tmp .env.bak.clean .env.bak.napcat update_notes.txt; do
