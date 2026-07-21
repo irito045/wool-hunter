@@ -38,6 +38,19 @@ from ..services.matcher import (
 )
 from ..services.dispatch import dispatch_deal
 from ..services.deepseek_checker import extract_block_keyword
+from ..services.constants import (
+    BAD_FB_WORDS,
+    GOOD_FB_WORDS,
+    PRICE_BAD_FB_WORDS,
+    DISLIKE_FB_WORDS,
+    NOT_DEAL_FB_WORDS,
+    SOURCE_LABEL as _QUERY_SRC_LABEL,
+    SUB_LISTS,
+)
+
+# tests/helpers.py 用 AST 抽取函数时会搜集模块级 `_SUB_LISTS = ...` 赋值。
+# 必须是字面量（不能依赖 import），否则 AST 抽取器执行时报 NameError。
+_SUB_LISTS = ("lowprice_subs", "keyword_subs", "category_subs")
 
 # ============================================================
 # 配置加载
@@ -135,7 +148,7 @@ def _broadcast_targets(subs: dict) -> tuple[set[int], set[int]]:
     users: set[int] = set()
     groups: set[int] = set()
     allowed = set(FORWARD_GROUP_IDS)
-    for lst in ("lowprice_subs", "keyword_subs", "category_subs"):
+    for lst in _SUB_LISTS:
         for s in subs.get(lst, []):
             gid = int(s.get("group_id", 0) or 0)
             owner = int(s.get("owner", 0) or 0)
@@ -174,9 +187,6 @@ async def _admin_notify(bot: Bot, text: str) -> None:
             await bot.send_private_msg(user_id=admin_id, message=text)
         except Exception:
             pass
-
-
-_SUB_LISTS = ("lowprice_subs", "keyword_subs", "category_subs")
 
 
 def _in_scope(sub: dict, uid: int, src_group: int) -> bool:
@@ -411,8 +421,6 @@ async def handle_help(event: MessageEvent):
 # ============================================================
 
 query_cmd = on_command("查", aliases={"找", "搜"}, priority=5, block=True)
-
-_QUERY_SRC_LABEL = {"qq": "QQ群", "weibo": "微博", "site": "0818团", "system": "系统"}
 
 
 # /查 的回溯时长。注意 events.jsonl 到 ~2MB 会自动轮转、只保留较新的一半，
@@ -910,7 +918,9 @@ async def handle_wool_cmd(bot: Bot, event: MessageEvent, args: Message = Command
         await bot.send(event, "🔄 重启中，稍等几秒…")
         await asyncio.sleep(0.5)
         if os.getenv("WOOL_WATCHDOG"):
-            os._exit(0)  # 由控制台的看门狗（gui/process.py:BotRunner）拉起新进程
+            # sys.exit 抛 SystemExit，让事件循环和上下文管理器正常清理；
+            # 看门狗（gui/process.py:BotRunner）看到进程退出后会自动拉起新进程。
+            sys.exit(0)
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
     # ── broadcast / 群发（管理员，仅私聊）：给所有订阅者群发一条通知 ──
@@ -945,21 +955,41 @@ async def _handle_broadcast(bot: Bot, uid: int, rest: str) -> None:
         # 原样发送：管理员发什么就发什么，不加任何抬头/前缀（用户要求）
         body = pending[0]
         users, groups = _broadcast_targets(_load_subscribers())
-        ok_u = ok_g = 0
-        for u in users:
-            try:
-                await bot.send_private_msg(user_id=u, message=body)
-                ok_u += 1
-            except Exception as e:
-                logger.warning(f"[群发] 发给用户 {u} 失败: {e}")
-            await asyncio.sleep(0.5)      # 放慢节奏，别触发 QQ 风控
-        for g in groups:
-            try:
-                await bot.send_group_msg(group_id=g, message=body)
-                ok_g += 1
-            except Exception as e:
-                logger.warning(f"[群发] 发给群 {g} 失败: {e}")
-            await asyncio.sleep(0.5)
+
+        # 并发发送，限制同时最多 3 条消息（风控安全），每条间隔 0.5s
+        sem = asyncio.Semaphore(3)
+        ok_u = 0
+        ok_g = 0
+
+        async def _send_user(u: int) -> bool:
+            async with sem:
+                try:
+                    await bot.send_private_msg(user_id=u, message=body)
+                    return True
+                except Exception as e:
+                    logger.warning(f"[群发] 发给用户 {u} 失败: {e}")
+                    return False
+                finally:
+                    await asyncio.sleep(0.5)
+
+        async def _send_group(g: int) -> bool:
+            async with sem:
+                try:
+                    await bot.send_group_msg(group_id=g, message=body)
+                    return True
+                except Exception as e:
+                    logger.warning(f"[群发] 发给群 {g} 失败: {e}")
+                    return False
+                finally:
+                    await asyncio.sleep(0.5)
+
+        results = await asyncio.gather(
+            *(_send_user(u) for u in users),
+            *(_send_group(g) for g in groups),
+        )
+        ok_u = sum(1 for r in results[:len(users)] if r)
+        ok_g = sum(1 for r in results[len(users):] if r)
+
         logger.info(f"[群发] 管理员 {uid} 完成：私聊 {ok_u}/{len(users)}，群 {ok_g}/{len(groups)}")
         await wool_cmd.finish(f"✅ 群发完成：私聊 {ok_u}/{len(users)} 人，群 {ok_g}/{len(groups)} 个。")
         return
@@ -1100,6 +1130,8 @@ async def _handle_weibo_cmd(rest: str):
 
 
 def _update_env_weibo(uids: list[str]):
+    """更新 .env 里的 WEIBO_UIDS 行（.bak 备份 + .tmp 原子替换，防写坏配置）。"""
+    import shutil as _shutil
     try:
         with open(ENV_FILE, "r", encoding="utf-8") as f:
             lines = f.readlines()
@@ -1112,8 +1144,16 @@ def _update_env_weibo(uids: list[str]):
                 break
         if not found:
             lines.append(f"WEIBO_UIDS={new_val}\n")
-        with open(ENV_FILE, "w", encoding="utf-8") as f:
+        # 先备份再原子写：save_subscribers / save_category_map 都这么做，这里也不能例外
+        if ENV_FILE.exists():
+            try:
+                _shutil.copy2(ENV_FILE, ENV_FILE.with_suffix(".env.bak"))
+            except OSError:
+                pass
+        tmp = ENV_FILE.with_suffix(".env.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             f.writelines(lines)
+        tmp.replace(ENV_FILE)
     except OSError as e:
         logger.error(f"更新 .env 失败: {e}")
 
@@ -1122,14 +1162,12 @@ def _update_env_weibo(uids: list[str]):
 # 私聊反馈监听（直接发「差价」或「好价」，无需 /w 前缀）
 # ============================================================
 
-_PRICE_BAD_FB_WORDS = {"差价", "不好价", "贵了", "太贵", "不值"}
-_DISLIKE_FB_WORDS = {
-    "不好", "不要", "不要这个", "不想要", "不需要", "不感兴趣", "没兴趣",
-    "这个不行", "别推这个", "别发这个", "跳过", "拉黑这个", "👎",
-}
-_NOT_DEAL_FB_WORDS = {"不是羊毛", "不像羊毛"}
-_BAD_FB_WORDS = _PRICE_BAD_FB_WORDS | _DISLIKE_FB_WORDS | _NOT_DEAL_FB_WORDS
-_GOOD_FB_WORDS = {"好价", "便宜", "不错", "划算", "👍"}
+# 反馈词已统一到 services/constants.py，这里 import 别名以保持函数引用兼容
+_PRICE_BAD_FB_WORDS = PRICE_BAD_FB_WORDS
+_DISLIKE_FB_WORDS = DISLIKE_FB_WORDS
+_NOT_DEAL_FB_WORDS = NOT_DEAL_FB_WORDS
+_BAD_FB_WORDS = BAD_FB_WORDS
+_GOOD_FB_WORDS = GOOD_FB_WORDS
 
 
 def _feedback_reason(text: str) -> str:

@@ -22,12 +22,18 @@ max_price/unit_price/smart）会在读取时自动迁移到新格式并回写一
 import json
 import logging
 import shutil
+import threading
 from pathlib import Path
 
 logger = logging.getLogger("subscriptions")
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 SUBSCRIBERS_FILE = DATA_DIR / "subscribers.json"
+
+# 写锁：防止同一进程内多个协程同时 load→modify→save 导致互相覆盖。
+# save_subscribers 是同步函数且调用链里没有 await，在当前 asyncio 架构下
+# 不会出现竞态，但锁作为防御性措施（未来引入多 worker 时能兜底）。
+_save_lock = threading.Lock()
 
 DEFAULT_SUBS = {
     "keyword_subs": [],
@@ -189,16 +195,17 @@ def load_subscribers() -> dict:
 
 def save_subscribers(data: dict) -> None:
     """写前把当前文件备份成 .bak，再用 .tmp 原子替换，避免写一半坏档。"""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if SUBSCRIBERS_FILE.exists():
-        try:
-            shutil.copy2(SUBSCRIBERS_FILE, SUBSCRIBERS_FILE.with_suffix(".bak"))
-        except OSError:
-            pass
-    tmp = SUBSCRIBERS_FILE.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    tmp.replace(SUBSCRIBERS_FILE)
+    with _save_lock:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if SUBSCRIBERS_FILE.exists():
+            try:
+                shutil.copy2(SUBSCRIBERS_FILE, SUBSCRIBERS_FILE.with_suffix(".bak"))
+            except OSError:
+                pass
+        tmp = SUBSCRIBERS_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(SUBSCRIBERS_FILE)
 
 
 def price_cap(sub: dict) -> float:

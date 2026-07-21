@@ -22,23 +22,66 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 
 import httpx
+from dotenv import dotenv_values
 
 from .net import NO_PROXY
 from .price_checker import strip_noise
 
 logger = logging.getLogger("deepseek")
 
-AI_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
-AI_BASE_URL = (os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com")
-AI_MODEL = (os.getenv("AI_MODEL", "").strip() or "deepseek-chat")
-# 有 key 才启用。名字沿用 DEEPSEEK_ENABLED，调用方都在读它。
-DEEPSEEK_ENABLED = bool(AI_API_KEY)
+# 模块级默认值：import 时从环境变量读一次作为兜底
+# 但 _call_ds() 每次调用前会 reload .env，所以控制台改了 key 下一秒就能生效，不用重启
+AI_API_KEY_DEFAULT = os.getenv("DEEPSEEK_API_KEY", "").strip()
+AI_BASE_URL_DEFAULT = (os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com")
+AI_MODEL_DEFAULT = (os.getenv("AI_MODEL", "").strip() or "deepseek-chat")
+
+# 保持向后兼容：这些名字在测试和其他模块中被引用
+AI_API_KEY = AI_API_KEY_DEFAULT
+AI_BASE_URL = AI_BASE_URL_DEFAULT
+AI_MODEL = AI_MODEL_DEFAULT
+DEEPSEEK_ENABLED = bool(AI_API_KEY_DEFAULT)
+
+_ENV_FILE = Path(__file__).parent.parent.parent / ".env"
+_env_mtime: float = 0.0
+_env_cache: dict[str, str] = {}
+
+
+def _reload_env() -> dict[str, str]:
+    """.env 文件变了就重读（mtime 缓存）。控制台改完 key，下一次 AI 调用就能用。"""
+    global _env_mtime, _env_cache, AI_API_KEY, AI_BASE_URL, AI_MODEL, DEEPSEEK_ENABLED
+    try:
+        if _ENV_FILE.exists():
+            mtime = _ENV_FILE.stat().st_mtime
+            if mtime != _env_mtime:
+                _env_cache = dict(dotenv_values(_ENV_FILE))
+                _env_mtime = mtime
+    except OSError:
+        pass
+    if not _env_cache:
+        return {}
+    # 同步更新模块级变量（供外部引用）
+    key = _env_cache.get("DEEPSEEK_API_KEY", "").strip()
+    AI_API_KEY = key
+    AI_BASE_URL = _env_cache.get("AI_BASE_URL", "").strip() or "https://api.deepseek.com"
+    AI_MODEL = _env_cache.get("AI_MODEL", "").strip() or "deepseek-chat"
+    DEEPSEEK_ENABLED = bool(key)
+    return _env_cache
+
+
+def _ai_config() -> tuple[str, str, str]:
+    """返回 (api_key, base_url, model)，每次都检查 .env 是否更新。"""
+    cfg = _reload_env()
+    key = cfg.get("DEEPSEEK_API_KEY", "").strip() or AI_API_KEY_DEFAULT
+    base = cfg.get("AI_BASE_URL", "").strip() or AI_BASE_URL_DEFAULT
+    model = cfg.get("AI_MODEL", "").strip() or AI_MODEL_DEFAULT
+    return key, base, model
 
 _lock = asyncio.Lock()
 _last_call: float = 0.0
-_MIN_INTERVAL = 1.0  # 两次 AI 请求之间最少间隔（秒）
+_MIN_INTERVAL = 0.3  # 两次 AI 请求之间最少间隔（秒）。DeepSeek 免费版 ~5 QPS，0.3s 安全。
 
 # 推理模型（deepseek-v4-flash/pro、o系列等）回答前先「思考」，思考过程同样计入
 # max_tokens。各调用点传的 max_tokens 只描述「答案本身」要几个 token（判定类就
@@ -58,16 +101,18 @@ def ai_endpoint(base_url: str = "") -> str:
     `.../v1`。统一规则：去掉尾部斜杠后补 `/chat/completions`；若用户已经把整条
     路径填全了（少数自建网关会这样），就不重复拼接。
     """
-    base = (base_url or AI_BASE_URL).strip().rstrip("/")
+    base = (base_url or _ai_config()[1]).strip().rstrip("/")
     if base.endswith("/chat/completions"):
         return base
     return base + "/chat/completions"
 
 
 async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str | None:
-    """底层 AI 调用，返回回答原文；未配置或失败返回 None。"""
+    """底层 AI 调用，返回回答原文；未配置或失败返回 None。
+    每次调用前检查 .env 是否更新，所以控制台改了 key 不需重启即可生效。"""
     global _last_call
-    if not DEEPSEEK_ENABLED:
+    api_key, base_url, model = _ai_config()
+    if not api_key:
         return None
     async with _lock:
         gap = _MIN_INTERVAL - (time.monotonic() - _last_call)
@@ -78,13 +123,13 @@ async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str |
             # 超时返回 None，各调用点都有安全降级（判定放行/回退字面匹配/返回空）。
             async with httpx.AsyncClient(timeout=httpx.Timeout(20.0), **NO_PROXY) as client:
                 resp = await client.post(
-                    ai_endpoint(),
+                    ai_endpoint(base_url),
                     headers={
-                        "Authorization": f"Bearer {AI_API_KEY}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": AI_MODEL,
+                        "model": model,
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": text[:800]},
@@ -101,7 +146,7 @@ async def _call_ds(text: str, system_prompt: str, max_tokens: int = 10) -> str |
                 # 也不能把截断出来的空串/半截话当成模型的真实回答——那会静默误判。
                 if not answer:
                     logger.warning(
-                        f"[AI] 模型 {AI_MODEL} 未返回有效回答"
+                        f"[AI] 模型 {model} 未返回有效回答"
                         f"（finish_reason={choice.get('finish_reason')}），按调用失败降级处理"
                     )
                     return None
@@ -195,7 +240,7 @@ async def match_keywords_semantically(text: str, words: set[str]) -> set[str]:
     text_low = strip_noise(text).lower()
     literal = {w for w in words if w.lower() in text_low}
     rest = [w for w in words if w not in literal]
-    if not rest or not DEEPSEEK_ENABLED:
+    if not rest or not _reload_env().get("DEEPSEEK_API_KEY", "").strip():
         return literal
     # 没有实质商品内容（纯链接/数字/占位）→ 不让 DS 对垃圾文本乱猜命中
     if not has_product_substance(text):
@@ -264,7 +309,7 @@ async def extract_block_keyword(text: str) -> str:
     无明确商品（纯活动/领券/闲聊/只有链接）时返回空串；
     未配置 DS 或调用失败也返回空串（宁可不屏蔽，也不乱屏蔽误伤）。
     """
-    if not DEEPSEEK_ENABLED:
+    if not _reload_env().get("DEEPSEEK_API_KEY", "").strip():
         return ""
     system = (
         "你是羊毛消息分析助手。从下面这条消息里，提取最能代表【商品类别】的一个核心词，"

@@ -94,15 +94,20 @@ def record(source: str, action: str, reason: str = "", *,
 
 
 def _rotate_if_needed() -> None:
-    """文件过大时只保留后半段（较新的）行，丢掉前半段。"""
+    """文件过大时只保留后半段（较新的）行，丢掉前半段。原子写入 + 清缓存。"""
+    global _cache_fp, _cache_rows
     try:
         if not EVENTS_FILE.exists() or EVENTS_FILE.stat().st_size <= _MAX_BYTES:
             return
         with open(EVENTS_FILE, "r", encoding="utf-8") as f:
             lines = f.readlines()
         keep = lines[len(lines) // 2:]
-        with open(EVENTS_FILE, "w", encoding="utf-8") as f:
+        tmp = EVENTS_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             f.writelines(keep)
+        tmp.replace(EVENTS_FILE)
+        # 轮转后缓存必须失效，否则还在用旧数据的幻影（已丢弃的前半段仍在内存里）
+        _cache_fp, _cache_rows = None, []
     except OSError:
         pass
 
@@ -113,6 +118,9 @@ def _rotate_if_needed() -> None:
 # 解析结果——record() 每次 append 都会改 mtime/size，缓存自动失效，读到的绝不过期。
 _cache_fp: tuple[float, int] | None = None
 _cache_rows: list[dict] = []
+# 兜底：如果轮转逻辑有 bug 导致文件异常增长，缓存行数超过此上限就截断尾部（最新行）。
+# events.jsonl 本身有 2MB 上限，正常不会超过 4000 行。这个限制是内存安全网。
+_MAX_CACHE_ROWS = 10_000
 
 
 def _read_all() -> list[dict]:
@@ -140,6 +148,9 @@ def _read_all() -> list[dict]:
                     continue
     except OSError:
         return _cache_rows  # 读失败时返回上次缓存，别把已有数据丢成空
+    if len(out) > _MAX_CACHE_ROWS:
+        logger.warning(f"[事件流水] 缓存行数 {len(out)} 超过上限 {_MAX_CACHE_ROWS}，截断旧行")
+        out = out[-_MAX_CACHE_ROWS:]
     _cache_fp, _cache_rows = fp, out
     return out
 

@@ -23,6 +23,7 @@ from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 from .net import NO_PROXY
 from .runtime_state import is_paused
 from .event_log import record, PUSH
+from .constants import SOURCE_LABEL
 
 logger = logging.getLogger("forwarder")
 
@@ -127,7 +128,7 @@ def _without_images(msg: Union[str, Message]) -> Optional[Union[str, Message]]:
 
 
 def _source_from_tag(tag: str) -> str:
-    """从日志 tag 推断来源：[微博…]→weibo，[0818…]→site，其余（羊毛/好价）→qq。"""
+    """从日志 tag 推断来源：[微博…]→weibo，[0818…]→site，其余→qq。"""
     if "微博" in tag:
         return "weibo"
     if "0818" in tag:
