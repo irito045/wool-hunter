@@ -68,8 +68,8 @@ class TestNoiseCategories(IsolatedDataTest):
             json.dumps(data, ensure_ascii=False), encoding="utf-8")
         self.bust_filters_cache()
 
-    def test_ten_categories(self):
-        self.assertEqual(len(self.pc.NOISE_CATEGORIES), 10)
+    def test_noise_categories_count(self):
+        self.assertEqual(len(self.pc.NOISE_CATEGORIES), 11)
 
     def test_missing_file_means_all_enabled(self):
         """filters.json 不存在 → 全部开启（新部署与重构前行为一致）。"""

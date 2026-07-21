@@ -424,9 +424,17 @@ def _n_flash_code(t: str, td: str) -> bool:
 
 
 def _n_restaurant(t: str, td: str) -> bool:
-    """餐饮品牌券：肯德基/麦当劳/瑞幸等商家券、联动（不是实物商品好价）。"""
-    return _h(t, "肯德基", "麦当劳", "星巴克", "汉堡王", "必胜客", "瑞幸", "塔斯汀",
-              "华莱士", "钵钵鸡", "赛百味") and _h(t, *_QUAN, *_DIE, "联动", "商家", "抢")
+    """餐饮品牌券：肯德基/麦当劳/瑞幸等商家券、联动（不是实物商品好价）。
+    
+    但如果消息里有明确价格（「29.9元」「19块」），说明是具体商品而非纯领券活动，
+    放行——肯德基联名周边、礼品卡这类实物羊毛不该被拦。"""
+    if not _h(t, "肯德基", "麦当劳", "星巴克", "汉堡王", "必胜客", "瑞幸", "塔斯汀",
+             "华莱士", "钵钵鸡", "赛百味"):
+        return False
+    # 有具体价格 → 更像实物商品而非纯领券帖，放行
+    if re.search(r"\d+(?:\.\d+)?\s*(?:元|块|亓|米|钱|悶)", t):
+        return False
+    return _h(t, *_QUAN, *_DIE, "联动", "商家", "抢")
 
 
 def _n_checkin(t: str, td: str) -> bool:
@@ -518,6 +526,24 @@ def _n_platform_task(t: str, td: str) -> bool:
     return False
 
 
+def _n_livestream(t: str, td: str) -> bool:
+    """直播/秒杀引流：限时预告、直播间搜口令、加微信领券——有号召没商品。
+    
+    只拦「纯引流动作」，不动含具体商品名的秒杀价（「【秒杀价19.9】牛奶」照推）。"""
+    # 「今晚X点秒杀」「限时秒杀」+ 没有明确商品名 → 纯预告引流
+    if re.search(r"(今晚|今晚|今晚|限时|马上|即将|倒计时).{0,6}(秒杀|抢购|开抢|开秒)", t):
+        if not re.search(r"[【\[［].+[】\]］]", t):   # 没有【商品名】→ 不是具体商品
+            return True
+    # 「直播间搜xxx领券」→ 给直播间引流
+    if re.search(r"直播[间間].{0,6}搜", t) and _h(t, "领", *_QUAN, *_HB):
+        return True
+    # 「加微信/扫码 领券/领红包」→ 私域引流
+    if re.search(r"(加微信|加V|扫码|扫一扫|进群|进裙).{0,8}(领|送|拿|给)", t) \
+       and _h(t, *_QUAN, *_HB, "优惠券"):
+        return True
+    return False
+
+
 # 类别 key（同时是 filters.json 的键、看板上的标题）→ (一句话说明, 判定函数)。
 # key 一旦上线就别改名——改名等于把用户已关掉的开关悄悄打开。
 NOISE_RULES: list[tuple[str, str, Callable[[str, str], bool]]] = [
@@ -531,6 +557,7 @@ NOISE_RULES: list[tuple[str, str, Callable[[str, str], bool]]] = [
     ("组队拉人助力", "组队/助力/砍一刀 换红包补贴", _n_team),
     ("游戏拉新", "消消乐等游戏回归拉人礼包", _n_game),
     ("平台任务领币", "浏览画圈领京豆金币、下载App领券", _n_platform_task),
+    ("直播秒杀引流", "限时秒杀预告、直播间搜口令、加微信领券", _n_livestream),
 ]
 
 NOISE_CATEGORIES: list[str] = [k for k, _, _ in NOISE_RULES]
