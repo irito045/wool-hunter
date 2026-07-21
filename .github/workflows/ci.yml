@@ -63,7 +63,6 @@ jobs:
                    src/data/subscribers.json.bak \
                    src/data/judge_feedback.bak \
                    src/data/feedback.json.bak \
-                   src/data/events.jsonl.bak.before-cleanup \
                    src/data/categories.json.tmp \
                    .env .env.tmp .env.bak.clean .env.bak.napcat update_notes.txt; do
             if git check-ignore -q "$f"; then
