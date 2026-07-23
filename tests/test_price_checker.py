@@ -9,6 +9,20 @@ import unittest
 from helpers import IsolatedDataTest
 
 
+class TestHighRiskRules(IsolatedDataTest):
+    def setUp(self):
+        super().setUp()
+        from services.price_checker import high_risk_verdict
+        self.risk = high_risk_verdict
+
+    def test_blocks_obvious_grey_content(self):
+        self.assertEqual(self.risk("兼职刷单 垫付马上返利"), "刷单跑分")
+        self.assertEqual(self.risk("百家乐盘口优惠"), "博彩赌博")
+
+    def test_ordinary_coupon_deal_is_not_high_risk(self):
+        self.assertEqual(self.risk("坚果到手19.9，返3元红包"), "")
+
+
 class TestEstimatePaidPrice(IsolatedDataTest):
     def setUp(self):
         super().setUp()

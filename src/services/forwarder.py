@@ -11,9 +11,11 @@ wool_hunter.py（群消息触发）和 weibo_monitor.py（微博轮询触发）
 
 import asyncio
 import base64
+from collections import deque
 import logging
 import os
 import re
+import time
 from typing import Iterable, Optional, Union
 
 import httpx
@@ -21,7 +23,7 @@ import httpx
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 
 from .net import NO_PROXY
-from .runtime_state import is_paused
+from .runtime_state import is_paused, set_paused
 from .event_log import record, PUSH
 from .constants import SOURCE_LABEL
 
@@ -32,6 +34,73 @@ _IMG_CQ_RE = re.compile(r"\[CQ:image[^\]]*\]")
 
 # base64 内嵌的单图大小上限（10MB，QQ 群图基本都在几百 KB）
 _MAX_INLINE_IMAGE = 10 * 1024 * 1024
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        logger.warning(f"{name} 配置解析失败，使用默认值 {default}")
+        return default
+
+
+# 普通羊毛推送的全局风控阈值。0 表示关闭该窗口；告警不受限流影响。
+_SEND_LIMIT_PER_MINUTE = max(0, _env_int("WOOL_SEND_LIMIT_PER_MINUTE", 30))
+_SEND_LIMIT_PER_HOUR = max(0, _env_int("WOOL_SEND_LIMIT_PER_HOUR", 300))
+_SEND_FAILURE_PAUSE_THRESHOLD = max(1, _env_int("WOOL_SEND_FAILURE_PAUSE_THRESHOLD", 5))
+
+_send_lock = asyncio.Lock()
+_send_minute: deque[float] = deque()
+_send_hour: deque[float] = deque()
+_failure_streak = 0
+
+
+def _drop_old(now: float) -> None:
+    while _send_minute and now - _send_minute[0] >= 60:
+        _send_minute.popleft()
+    while _send_hour and now - _send_hour[0] >= 3600:
+        _send_hour.popleft()
+
+
+async def _reserve_send_slot(tag: str, target_desc: str) -> bool:
+    """普通推送发出前占一个全局额度；超过阈值立即暂停，防止刷屏。"""
+    async with _send_lock:
+        now = time.monotonic()
+        _drop_old(now)
+        if _SEND_LIMIT_PER_MINUTE and len(_send_minute) >= _SEND_LIMIT_PER_MINUTE:
+            set_paused(True)
+            logger.error(
+                f"{tag} 触发每分钟发送上限 {_SEND_LIMIT_PER_MINUTE}，"
+                f"已自动暂停推送；当前目标={target_desc}"
+            )
+            return False
+        if _SEND_LIMIT_PER_HOUR and len(_send_hour) >= _SEND_LIMIT_PER_HOUR:
+            set_paused(True)
+            logger.error(
+                f"{tag} 触发每小时发送上限 {_SEND_LIMIT_PER_HOUR}，"
+                f"已自动暂停推送；当前目标={target_desc}"
+            )
+            return False
+        _send_minute.append(now)
+        _send_hour.append(now)
+        return True
+
+
+def _note_send_success() -> None:
+    global _failure_streak
+    _failure_streak = 0
+
+
+def _note_send_failure(tag: str, target_desc: str) -> None:
+    """连续发送失败到阈值时自动暂停；避免连接坏了还持续刷重试。"""
+    global _failure_streak
+    _failure_streak += 1
+    if _failure_streak >= _SEND_FAILURE_PAUSE_THRESHOLD:
+        set_paused(True)
+        logger.error(
+            f"{tag} 连续发送失败 {_failure_streak} 次，已自动暂停推送；"
+            f"最后失败目标={target_desc}"
+        )
 
 
 async def _hydrate_images(bot: Bot, msg: Union[str, Message]) -> Union[str, Message]:
@@ -173,6 +242,8 @@ async def forward_message(
 
     async def _send_one(send, target_desc: str, key: int) -> None:
         """对单个目标发送 + 重试；重试都失败且消息带图时，降级去图再试一次。"""
+        if not is_alert and not await _reserve_send_slot(tag, target_desc):
+            return
         for attempt in range(1, retries + 1):
             try:
                 result = await send(send_msg)
@@ -181,6 +252,8 @@ async def forward_message(
                     sent[key] = msg_id
                 logger.info(f"{tag} 已转发到{target_desc}")
                 all_targets.append(target_desc.replace("用户 ", ""))
+                if not is_alert:
+                    _note_send_success()
                 return
             except Exception as e:
                 if attempt < retries:
@@ -190,6 +263,8 @@ async def forward_message(
                 fallback = _without_images(send_msg)
                 if fallback is None:
                     logger.error(f"{tag} 转发到{target_desc} 失败(重试后): {e}")
+                    if not is_alert:
+                        _note_send_failure(tag, target_desc)
                     return
                 try:
                     result = await send(fallback)
@@ -198,8 +273,12 @@ async def forward_message(
                         sent[key] = msg_id
                     logger.warning(f"{tag} {target_desc} 原样发送失败，已降级去图重发成功: {e}")
                     all_targets.append(target_desc.replace("用户 ", ""))
+                    if not is_alert:
+                        _note_send_success()
                 except Exception as e2:
                     logger.error(f"{tag} 转发到{target_desc} 失败(降级去图后仍失败): {e2}")
+                    if not is_alert:
+                        _note_send_failure(tag, target_desc)
 
     for uid in user_ids:
         await _send_one(lambda m, _u=uid: bot.send_private_msg(user_id=_u, message=m),

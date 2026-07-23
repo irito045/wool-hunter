@@ -1,6 +1,7 @@
 # 密钥
 .env
 .env.bak*
+.env*.bak*
 # 控制台原子写 .env 时的中间文件。进程在 replace 前被杀就会留下它，
 # 里面是完整的 key 和 Cookie。（gitignore 不支持行尾注释，注释必须单独成行）
 .env.tmp

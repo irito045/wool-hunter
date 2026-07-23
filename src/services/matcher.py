@@ -27,6 +27,7 @@ from .price_checker import (
     find_trigger_word,
     has_bill_signal,
     has_free_goods_signal,
+    high_risk_verdict,
     has_lottery_signal,
     has_trial_signal,
     noise_verdict,
@@ -54,6 +55,13 @@ async def passes_quality(text: str, source: str = "") -> bool:
 
     source 仅用于把「为什么没推」记进看板事件流水，不影响判定结果。
     """
+    # ⓪ 高风险内容先硬拦，防止博彩/刷单跑分/隐私证件买卖等内容被任何放行路径自动转发。
+    risk = high_risk_verdict(text)
+    if risk:
+        logger.warning(f"[高风险拦截] {risk}: {text[:40]}…")
+        record(source, FILTER, "高风险", title=text)
+        return False
+
     # ① 用户的明确裁决优先于一切规则（只认完全相同的文本，确定性、可解释）
     said = verdict_for(text)
     if said == "block":

@@ -1,7 +1,7 @@
 """用户反馈 → 推送行为的闭环。
 
-`verdict_for()` 是**反馈唯一真正影响推送的通道**。DeepSeek 自 2026-07-08
-重构后一条反馈都不读；票数只供人工复盘。
+`verdict_for()` 是反馈影响普通质量门的通道。DeepSeek 自 2026-07-08
+重构后一条反馈都不读；票数只供人工复盘。高风险内容仍然硬拦，不允许反馈放行。
 """
 
 import json
@@ -83,7 +83,7 @@ class TestVerdict(IsolatedDataTest):
 
 
 class TestQualityGateHonoursVerdict(IsolatedDataTest):
-    """passes_quality 最前面就问用户的裁决，连 DS 都不问。"""
+    """用户裁决优先于普通噪音规则；高风险内容仍硬拦。"""
 
     def setUp(self):
         super().setUp()
@@ -107,6 +107,11 @@ class TestQualityGateHonoursVerdict(IsolatedDataTest):
         self.assertFalse(self._run(text))           # 本来被噪音规则拦
         self.fb.revise_feedback(text, "good", reason="should_push")
         self.assertTrue(self._run(text))            # 用户说这是真羊毛
+
+    def test_high_risk_beats_pass_verdict(self):
+        text = "兼职刷单 垫付马上返利"
+        self.fb.revise_feedback(text, "good", reason="should_push")
+        self.assertFalse(self._run(text))
 
 
 if __name__ == "__main__":

@@ -343,6 +343,25 @@ def has_trial_signal(text: str) -> bool:
     return any(w.lower() in tl for w in TRIAL_TRIGGERS)
 
 
+# 高风险/违规内容硬拦截：这层不判断「是不是羊毛」，只管不让明显灰产内容自动转发。
+# 规则刻意用强特征，避免误伤普通商品名、正规抽奖或用户闲聊。
+HIGH_RISK_RULES: list[tuple[str, re.Pattern]] = [
+    ("博彩赌博", re.compile(r"博彩|赌球|盘口|百家乐|真人视讯|体育投注|彩票代买|时时彩|六合彩")),
+    ("刷单跑分", re.compile(r"刷单|跑分|洗钱|刷流水|代收款|套现|垫付.{0,8}返|兼职.{0,8}返利")),
+    ("隐私证件买卖", re.compile(r"买卖.{0,6}身份证|身份证.{0,6}出售|银行卡.{0,6}出售|实名手机卡|四件套")),
+    ("色情引流", re.compile(r"裸聊|约炮|色情网|成人视频|同城交友.{0,8}上门")),
+    ("绕风控工具", re.compile(r"绕过验证码|验证码平台|接码平台|自动抢券|自动下单|外挂|破解脚本")),
+]
+
+
+def high_risk_verdict(text: str) -> str:
+    """命中明显高风险/违规内容时返回类别名；否则返回空串。"""
+    for name, pattern in HIGH_RISK_RULES:
+        if pattern.search(text):
+            return name
+    return ""
+
+
 # 品牌免费送实物的活动帖，格式高度固定：【小米之家兔费领80w份矿泉水】
 # 【优衣库兔费送1k份衬衫】【苏果超市兔费领帆布袋】。用户 2026-07-19 明确要收这一类，
 # **门槛不论**——要到店、要打卡、要发笔记都照推，只要最后拿到的是一件实物。
