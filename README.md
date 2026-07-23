@@ -96,4 +96,4 @@ MIT
 
 ---
 
-📖 [使用手册](docs/使用手册.md) · 🛠 [开发者笔记 CLAUDE.md](CLAUDE.md)
+📖 [使用手册](docs/使用手册.md) · 🛠 [开发者笔记 AGENTS.md](AGENTS.md)

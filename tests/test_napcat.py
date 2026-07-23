@@ -1,7 +1,7 @@
 """控制台接管 NapCat 的那几条不变量。
 
 这里只测纯函数和文件操作——`_processes()` 要冷启 PowerShell，CI 上也没有 NapCat。
-真正跑起来的部分靠手动验证，验证记录写在 CLAUDE.md 里。
+真正跑起来的部分靠手动验证，验证记录写在 AGENTS.md 里。
 """
 
 import json
